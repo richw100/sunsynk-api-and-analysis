@@ -27,7 +27,8 @@ export SUNSYNK_PASSWORD=...
 
 # Run collectdata analysis (works from any directory)
 python analysis/collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBattery:ON|OFF] [startChargeW] [stopChargeW] [_EnergyPrices.json|DEFAULT] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD]
-# Windows: analysis\runCollectData.bat
+# Linux/Debian: analysis/runCollectData.sh
+# Windows:      analysis\runCollectData.bat
 ```
 
 ## Architecture
@@ -45,7 +46,9 @@ Do not add custom code here — this package tracks the upstream library and sho
 
 ### `analysis/` — our extensions and energy analysis engine
 
-- `collectdata.py` — standalone CLI script; iterates over all historical months/days and prints a financial analysis of the solar/battery installation. Can be run from any directory (`python analysis/collectdata.py ...` or `python3 collectdata.py ...` from within `analysis/`). It sets `PROJECT_ROOT` from `__file__` and calls `os.chdir(PROJECT_ROOT)` at startup so imports and `inverterData/` paths always resolve correctly. On Windows use `analysis\runCollectData.bat`.
+- `collectdata.py` — standalone CLI script; iterates over all historical months/days and prints a financial analysis of the solar/battery installation. Can be run from any directory (`python analysis/collectdata.py ...` or `python3 collectdata.py ...` from within `analysis/`). It sets `PROJECT_ROOT` from `__file__` and calls `os.chdir(PROJECT_ROOT)` at startup so imports and `inverterData/` paths always resolve correctly.
+- `runCollectData.sh` — Linux/Debian launcher; prompts for credentials if not already set as env vars (password prompt is silent). Run from any directory.
+- `runCollectData.bat` — Windows equivalent of the above.
 - `energy_client.py` — `SunsynkEnergyClient(SunsynkClient)`: subclass that adds `get_energy_day()`, `get_energy_month()`, and `_get_cached()` (local file caching of daily API responses to `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file exists and not caching the current day). Accesses the parent's private HTTP method via its mangled name `_SunsynkClient__get` — noted in the class docstring.
 - `energyday.py` — `EnergyDay` and `EnergyMonth`: parse the 5-minute interval timeseries from the plant energy endpoints.
 - `calculations.py` — the analysis engine:
