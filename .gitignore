@@ -1,0 +1,8 @@
+inverterData/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.backup
+*.backup2
+.env
