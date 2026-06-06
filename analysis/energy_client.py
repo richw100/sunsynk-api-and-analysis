@@ -3,7 +3,8 @@ from datetime import datetime
 
 from sunsynk.client import SunsynkClient
 from analysis.calculations import VirtualBattery
-from analysis.energyday import EnergyDay, EnergyMonth
+from analysis.energyday import EnergyDay
+from analysis.energymonth import EnergyMonth
 
 
 class SunsynkEnergyClient(SunsynkClient):
