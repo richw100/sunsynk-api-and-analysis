@@ -6,14 +6,11 @@ from sunsynk.input import Input
 from sunsynk.inverter import Inverter
 from sunsynk.output import Output
 from sunsynk.plant import Plant
-from sunsynk.energyday import EnergyDay
-from sunsynk.energyday import EnergyMonth
-import json
 
-from datetime import datetime
 import hashlib
 import sys
 import base64
+import time
 
 if sys.platform == 'win32':
     from Crypto.PublicKey import RSA
@@ -22,11 +19,8 @@ else:
     from Cryptodome.PublicKey import RSA
     from Cryptodome.Cipher import PKCS1_v1_5
 
-# -------------------------------
-# Encrypt with Public Key (like JSEncrypt)
-# -------------------------------
+
 def rsa_encrypt(public_key_pem: str, message: str) -> str:
-    
     try:
         rsa_key = RSA.import_key(public_key_pem)
         cipher = PKCS1_v1_5.new(rsa_key)
@@ -35,30 +29,29 @@ def rsa_encrypt(public_key_pem: str, message: str) -> str:
     except (ValueError, TypeError) as e:
         raise ValueError(f"Encryption failed: {e}")
 
-class FailedPubKeyException(Exception):
-    def __init__(self):
-        super().__init__('Failed to retrieve Public Key')
 
 class InvalidCredentialsException(Exception):
     def __init__(self):
         super().__init__('Invalid username or password')
 
+
 class SunsynkClient:
 
+    _SOURCE = 'sunsynk'
+    _CLIENT_ID = 'csp-web'
+
     @classmethod
-    async def create(cls, username: str, password: str, base_url: str = None, source: str=None):
-        self = SunsynkClient(username, password, base_url, source)
+    async def create(cls, username: str, password: str, base_url: str = None):
+        self = SunsynkClient(username, password, base_url)
         return await self.login()
-        
-    def __init__(self, username: str, password: str, base_url: str=None, source: str=None) :
-        self.base_url = 'https://pv.inteless.com' if base_url is None else base_url
-        self.source = 'inteless' if source is None else source
+
+    def __init__(self, username: str, password: str, base_url: str = None):
+        self.base_url = 'https://api.sunsynk.net' if base_url is None else base_url
         self.session = aiohttp.ClientSession()
         self.access_token = None
         self.refresh_token = None
         self.username = username
         self.password = password
-        self.VarCurrentDate = datetime.today().strftime('%Y-%m-%d')
 
     async def __aenter__(self):
         await self.login()
@@ -77,7 +70,7 @@ class SunsynkClient:
         return [Plant(data) for data in plants]
 
     async def get_inverters(self) -> list[Inverter]:
-        resp = await self.__get('api/v1/inverters?page=1&limit=10&total=0&status=-1&sn=&plantId=&type=-2&softVer=&' \
+        resp = await self.__get('api/v1/inverters?page=1&limit=10&total=0&status=-1&sn=&plantId=&type=-2&softVer=&'
                                 'hmiVer=&agentCompanyId=-1&gsn=')
         body = await resp.json()
         inverters = body['data']['infos']
@@ -103,31 +96,6 @@ class SunsynkClient:
         body = await resp.json()
         return Battery(body['data'])
 
-    async def get_energy_day(self, plant_id: str, date: str, month: EnergyMonth, battery: Battery, offpeakstart, offpeakstop) -> EnergyDay:
-        body = await self.__getJSON(f'api/v1/plant/energy/{plant_id}/day?lan=en&date={date}&id={plant_id}', 'day', date)
-        #body = await resp.json()
-        return EnergyDay(body['data'], date, month, battery, offpeakstart, offpeakstop)
-        
-    async def get_energy_month(self, plant_id: str, date: str) -> EnergyMonth:
-        resp = await self.__get(f'api/v1/plant/energy/{plant_id}/month?lan=en&date={date}&id={plant_id}')
-        body = await resp.json()
-        return EnergyMonth(body['data'])
-
-    async def __getJSON(self, path: str, req_type: str, date: str):
-        try:
-            with open(f'inverterData/{req_type}-{date}.json') as data_file:
-                body = json.load(data_file)
-                #print(f'Load from file: {req_type}-{date}.json')
-        except Exception as e:
-            #print(f'Load from path: {path}')
-            resp = await self.__get(path)
-            body = await resp.json()
-            if (date != self.VarCurrentDate):
-                with open(f'inverterData/{req_type}-{date}.json', 'w') as file:
-                    json.dump(body, file, indent=2)  # 'indent' for pretty-printing 
-                    print(f'Write to file: {req_type}-{date}.json')
-        return body
-
     async def __get(self, path: str, attempts: int = 1):
         resp = await self.session.get(self.__url(path), headers=self.__headers(), timeout=20)
         if resp.status == 401 and attempts == 1:
@@ -142,42 +110,24 @@ class SunsynkClient:
         if self.access_token:
             headers['Authorization'] = f"Bearer {self.access_token}"
         return headers
-        
-    async def get_public_key(self, nonce):
-        
-        urlstring = 'nonce=' + nonce + '&source=' + self.source
-        hashstring = urlstring + "POWER_VIEW"
-        md5_hash = hashlib.md5(hashstring.encode('utf-8')).hexdigest()
-        url = 'anonymous/publicKey?' + urlstring + '&sign=' + md5_hash
-        
-        resp = await self.session.get(self.__url(url), 
-                                      headers={"Content-Type": "application/json"}, 
-                                      timeout=20)
-        if resp.status == 200:
-            resp_body = await resp.json()
-            pubKey = resp_body['data']
-            return "-----BEGIN PUBLIC KEY-----\n" + pubKey + "\n-----END PUBLIC KEY-----"
-        raise FailedPubKeyException()
 
     async def login(self):
-        
-        nonce = str(int(datetime.today().timestamp() * 1000))
-        public_key = await self.get_public_key(nonce)
-        signdata = "nonce=" + nonce + "&source=" + self.source + public_key[27:37]
-        sign = hashlib.md5(signdata.encode('utf-8')).hexdigest()
-        enc_password = rsa_encrypt(public_key, self.password)
-        
+        raw_key = await self.__fetch_public_key()
+        encrypted_password = rsa_encrypt(
+            f'-----BEGIN PUBLIC KEY-----\n{raw_key}\n-----END PUBLIC KEY-----',
+            self.password
+        )
+        login_nonce = self.__make_nonce()
+        login_sign = self.__md5_hex(f'nonce={login_nonce}&source={self._SOURCE}{raw_key[:10]}')
         payload = {
-            'sign': sign,
-            'nonce':int(nonce),
             'username': self.username,
-            'password': enc_password,
+            'password': encrypted_password,
             'grant_type': 'password',
-            'client_id': 'csp-web',
-            'source': self.source
+            'client_id': self._CLIENT_ID,
+            'source': self._SOURCE,
+            'nonce': login_nonce,
+            'sign': login_sign,
         }
-        
-        #resp = await self.session.post(self.__url('oauth/token'),
         resp = await self.session.post(self.__url('oauth/token/new'),
                                        headers={"Content-Type": "application/json"},
                                        timeout=20,
@@ -189,6 +139,26 @@ class SunsynkClient:
                 self.refresh_token = resp_body['data']['refresh_token']
                 return self
         raise InvalidCredentialsException()
+
+    async def __fetch_public_key(self) -> str:
+        nonce = self.__make_nonce()
+        sign = self.__md5_hex(f'nonce={nonce}&source={self._SOURCE}POWER_VIEW')
+        url = self.__url(f'anonymous/publicKey?nonce={nonce}&source={self._SOURCE}&sign={sign}')
+        resp = await self.session.get(url, headers={"Content-Type": "application/json"}, timeout=20)
+        if resp.status != 200:
+            raise InvalidCredentialsException()
+        body = await resp.json()
+        if not body.get('success') or not body.get('data'):
+            raise InvalidCredentialsException()
+        return body['data']
+
+    @staticmethod
+    def __make_nonce() -> int:
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def __md5_hex(value: str) -> str:
+        return hashlib.md5(value.encode()).hexdigest()
 
     def __url(self, path: str) -> str:
         return f'{self.base_url}/{path}'

@@ -4,7 +4,7 @@ import json
 import sys
 import re
 
-from sunsynk.client import SunsynkClient
+from sunsynk.energy_client import SunsynkEnergyClient
 
 from sunsynk.calculations import VirtualBattery
 from sunsynk.calculations import PriceData, EnergyPrices
@@ -19,7 +19,7 @@ async def main():
     
     print(f"Username: {sunsynk_username}")
 
-    async with SunsynkClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net", "sunsynk") as client:
+    async with SunsynkEnergyClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net") as client:
         inverters = await client.get_inverters()
         for inverter in inverters:
             grid = await client.get_inverter_realtime_grid(inverter.sn)
