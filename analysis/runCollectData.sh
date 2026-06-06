@@ -11,4 +11,5 @@ if [ -z "$SUNSYNK_PASSWORD" ]; then
     export SUNSYNK_PASSWORD
 fi
 
-python3 "$(dirname "$0")/collectdata.py" Off 5000 on 2500 5000
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"$SCRIPT_DIR/../venv/bin/python" "$SCRIPT_DIR/collectdata.py" Off 5000 on 2500 5000
