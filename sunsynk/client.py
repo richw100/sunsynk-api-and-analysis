@@ -1,4 +1,10 @@
+import base64
+import hashlib
+import time
+
 import aiohttp
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from sunsynk.battery import Battery
 from sunsynk.grid import Grid
@@ -6,28 +12,6 @@ from sunsynk.input import Input
 from sunsynk.inverter import Inverter
 from sunsynk.output import Output
 from sunsynk.plant import Plant
-
-import hashlib
-import sys
-import base64
-import time
-
-if sys.platform == 'win32':
-    from Crypto.PublicKey import RSA
-    from Crypto.Cipher import PKCS1_v1_5
-else:
-    from Cryptodome.PublicKey import RSA
-    from Cryptodome.Cipher import PKCS1_v1_5
-
-
-def rsa_encrypt(public_key_pem: str, message: str) -> str:
-    try:
-        rsa_key = RSA.import_key(public_key_pem)
-        cipher = PKCS1_v1_5.new(rsa_key)
-        encrypted_bytes = cipher.encrypt(message.encode('utf-8'))
-        return base64.b64encode(encrypted_bytes).decode('utf-8')
-    except (ValueError, TypeError) as e:
-        raise ValueError(f"Encryption failed: {e}")
 
 
 class InvalidCredentialsException(Exception):
@@ -45,7 +29,7 @@ class SunsynkClient:
         self = SunsynkClient(username, password, base_url)
         return await self.login()
 
-    def __init__(self, username: str, password: str, base_url: str = None):
+    def __init__(self, username: str, password: str, base_url: str=None):
         self.base_url = 'https://api.sunsynk.net' if base_url is None else base_url
         self.session = aiohttp.ClientSession()
         self.access_token = None
@@ -70,7 +54,7 @@ class SunsynkClient:
         return [Plant(data) for data in plants]
 
     async def get_inverters(self) -> list[Inverter]:
-        resp = await self.__get('api/v1/inverters?page=1&limit=10&total=0&status=-1&sn=&plantId=&type=-2&softVer=&'
+        resp = await self.__get('api/v1/inverters?page=1&limit=10&total=0&status=-1&sn=&plantId=&type=-2&softVer=&' \
                                 'hmiVer=&agentCompanyId=-1&gsn=')
         body = await resp.json()
         inverters = body['data']['infos']
@@ -113,12 +97,12 @@ class SunsynkClient:
 
     async def login(self):
         raw_key = await self.__fetch_public_key()
-        encrypted_password = rsa_encrypt(
-            f'-----BEGIN PUBLIC KEY-----\n{raw_key}\n-----END PUBLIC KEY-----',
-            self.password
-        )
+        encrypted_password = self.__rsa_encrypt_pkcs1v15(raw_key, self.password)
+
         login_nonce = self.__make_nonce()
-        login_sign = self.__md5_hex(f'nonce={login_nonce}&source={self._SOURCE}{raw_key[:10]}')
+        login_sign = self.__md5_hex(
+            f'nonce={login_nonce}&source={self._SOURCE}{raw_key[:10]}'
+        )
         payload = {
             'username': self.username,
             'password': encrypted_password,
@@ -143,8 +127,14 @@ class SunsynkClient:
     async def __fetch_public_key(self) -> str:
         nonce = self.__make_nonce()
         sign = self.__md5_hex(f'nonce={nonce}&source={self._SOURCE}POWER_VIEW')
-        url = self.__url(f'anonymous/publicKey?nonce={nonce}&source={self._SOURCE}&sign={sign}')
-        resp = await self.session.get(url, headers={"Content-Type": "application/json"}, timeout=20)
+        url = self.__url(
+            f'anonymous/publicKey?nonce={nonce}&source={self._SOURCE}&sign={sign}'
+        )
+        resp = await self.session.get(
+            url,
+            headers={"Content-Type": "application/json"},
+            timeout=20,
+        )
         if resp.status != 200:
             raise InvalidCredentialsException()
         body = await resp.json()
@@ -159,6 +149,13 @@ class SunsynkClient:
     @staticmethod
     def __md5_hex(value: str) -> str:
         return hashlib.md5(value.encode()).hexdigest()
+
+    @staticmethod
+    def __rsa_encrypt_pkcs1v15(raw_key: str, plaintext: str) -> str:
+        pem = f'-----BEGIN PUBLIC KEY-----\n{raw_key}\n-----END PUBLIC KEY-----'.encode()
+        public_key = serialization.load_pem_public_key(pem)
+        ciphertext = public_key.encrypt(plaintext.encode(), padding.PKCS1v15())
+        return base64.b64encode(ciphertext).decode()
 
     def __url(self, path: str) -> str:
         return f'{self.base_url}/{path}'
