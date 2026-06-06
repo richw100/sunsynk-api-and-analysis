@@ -25,9 +25,9 @@ export SUNSYNK_PASSWORD=...
 # Run a single test
 ./venv/bin/pytest tests/test_client.py::test_get_inverters
 
-# Run collectdata analysis
-python collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBattery:ON|OFF] [startChargeW] [stopChargeW] [_EnergyPrices.json|DEFAULT] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD]
-# Example (Windows): runCollectData.bat
+# Run collectdata analysis (from project root)
+python analysis/collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBattery:ON|OFF] [startChargeW] [stopChargeW] [_EnergyPrices.json|DEFAULT] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD]
+# Example (Windows, run from project root): analysis\runCollectData.bat
 ```
 
 ## Architecture
@@ -45,6 +45,7 @@ Do not add custom code here — this package tracks the upstream library and sho
 
 ### `analysis/` — our extensions and energy analysis engine
 
+- `collectdata.py` — standalone CLI script; iterates over all historical months/days and prints a financial analysis of the solar/battery installation. Run from the project root as `python analysis/collectdata.py ...`. On Windows use `analysis\runCollectData.bat`.
 - `energy_client.py` — `SunsynkEnergyClient(SunsynkClient)`: subclass that adds `get_energy_day()`, `get_energy_month()`, and `_get_cached()` (local file caching of daily API responses to `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file exists and not caching the current day). Accesses the parent's private HTTP method via its mangled name `_SunsynkClient__get` — noted in the class docstring.
 - `energyday.py` — `EnergyDay` and `EnergyMonth`: parse the 5-minute interval timeseries from the plant energy endpoints.
 - `calculations.py` — the analysis engine:
