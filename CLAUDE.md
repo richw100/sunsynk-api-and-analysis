@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+This project is a fork of [sunsynk-api-client](https://github.com/jamesridgway/sunsynk-api-client) by James Ridgway, extended with energy cost analysis and battery simulation tools.
+
 ## Setup
 
 ```bash
@@ -34,29 +36,29 @@ There are two distinct layers:
 
 ### 1. API client library (`sunsynk/`)
 
-A thin async wrapper around the Sunsynk/PowerView REST API (`https://pv.inteless.com`). It uses RSA+MD5 to authenticate (see `client.py:login`), then exposes typed data objects:
+A thin async wrapper around the Sunsynk REST API (`https://api.sunsynk.net`). Authentication uses RSA+MD5 — the client fetches a public key, RSA-encrypts the password, and signs the request with MD5 (see `client.py:login`). The `cryptography` package is used for RSA encryption.
 
-- `SunsynkClient` — async context manager; use `async with SunsynkClient(u, p) as client:` or `await SunsynkClient.create(u, p)`
-- API data models: `Battery`, `Grid`, `Input`, `Output`, `Inverter`, `Plant`, `pviv.Vip` — all extend `Resource` (provides `__repr__`)
-- `EnergyDay` / `EnergyMonth` — parse the 5-minute interval timeseries returned by the plant energy endpoints
+- `SunsynkClient` — upstream library class (v1.0.9); async context manager. Use `async with SunsynkClient(u, p) as client:` or `await SunsynkClient.create(u, p)`.
+- `SunsynkEnergyClient` (`energy_client.py`) — our subclass of `SunsynkClient` that adds energy history methods and local file caching. This is what `collectdata.py` uses.
+- API data models: `Battery` (`battery.py`), `Grid`, `Input`, `Output`, `Inverter`, `Plant`, `Vip` — all extend `Resource` (provides `__repr__`)
 
-`client.__getJSON()` caches daily API responses as JSON files under `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file already exists (does **not** cache the current day).
+`SunsynkEnergyClient` accesses the parent's private `__get` HTTP method via its mangled name `_SunsynkClient__get`. This is intentional — noted in the class docstring.
 
-The `SunsynkClient` supports an alternate base URL and source string so it can target `https://api.sunsynk.net` (used by `collectdata.py`) vs `https://pv.inteless.com` (default/library).
+`SunsynkEnergyClient._get_cached()` caches daily API responses as JSON files under `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file already exists (does **not** cache the current day).
 
-### 2. Energy analysis tool (`collectdata.py` + `sunsynk/calculations.py`)
+### 2. Energy analysis tool (`collectdata.py` + `sunsynk/calculations.py` + `sunsynk/energyday.py`)
 
-`collectdata.py` is a standalone CLI script that iterates over all historical months/days, calculates cost and savings, and prints a financial analysis of the solar/battery installation.
+`collectdata.py` is a standalone CLI script that iterates over all historical months/days, calculates cost and savings, and prints a financial analysis of the solar/battery installation. It uses `SunsynkEnergyClient`.
+
+`sunsynk/energyday.py` parses the 5-minute interval timeseries returned by the plant energy endpoints into `EnergyDay` and `EnergyMonth` objects.
 
 `sunsynk/calculations.py` contains the analysis engine:
 
-- `PriceData` — holds the current energy tariff rates (off-peak rate, peak rate, export rate, standing charge, compare rate, off-peak window). These values are hardcoded as defaults but are overridden per-period by `EnergyPrices.checkDate()`.
-- `Battery` (in `calculations.py`, not `battery.py`) — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings.
+- `PriceData` — holds the current energy tariff rates (off-peak rate, peak rate, export rate, standing charge, compare rate, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.checkDate()`.
+- `VirtualBattery` — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from `sunsynk/battery.py`'s `Battery` (the API response model for realtime battery state).
 - `EnergySummary` — accumulates per-day data for a single tariff period; supports `newMonth()` to compound interest on cumulative savings.
 - `EnergySummaryAggregator` — holds a list of `EnergySummary` objects (one per tariff period) and computes cross-period grand totals.
 - `EnergyPrices` — top-level orchestrator; reads `_EnergyPrices.json` for tariff history, calls `checkDate()` on each day to switch tariff periods, and exposes `print_*` methods for the final report.
-
-**Name collision:** `sunsynk/battery.py` is the API response model (realtime battery state). `sunsynk/calculations.py` also defines a `Battery` class which is the simulation model. `collectdata.py` imports the calculations one explicitly.
 
 ### Energy price data files (`inverterData/_EnergyPrices*.json`)
 
@@ -64,4 +66,4 @@ JSON files defining tariff periods with fields: `datefrom`, `dateto`, `offpeakRa
 
 ## Tests
 
-Tests use `pytest-asyncio` and `pytest-aiohttp`. The `MockApiServer` in `tests/mock_api_server.py` spins up a local aiohttp server to simulate the Sunsynk API, eliminating real network calls. Tests are all async and use `aiohttp_client` + `event_loop` fixtures.
+Tests use `pytest-asyncio` and `pytest-aiohttp`. The `MockApiServer` in `tests/mock_api_server.py` spins up a local aiohttp server that generates a real RSA key pair, serves it via `/anonymous/publicKey`, and verifies the encrypted password on login — matching the real API's auth flow. Tests are all async and use `aiohttp_client` + `event_loop` fixtures.
