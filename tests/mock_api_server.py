@@ -363,67 +363,56 @@ class MockApiServer:
         return web.Response(text=json.dumps(payload), headers=headers)
 
     async def get_energy_day(self, request):
-        # 5-minute interval records (W) for 2025-06-10.
-        # Records at 00:00 and 00:05 fall in the offpeak window (00:00-06:00);
-        # the record at 08:00 falls in the peak window.
-        #
-        # Expected calculated values with offpeakstart=00:00, offpeakstop=06:00:
+        date = request.rel_url.query.get('date', '')
+        if date == '2025-06-11':
+            infos = self._day_infos_peak_export()
+        else:
+            infos = self._day_infos_standard()
+        payload = {"code": 0, "msg": "Success", "data": {"infos": infos}, "success": True}
+        return web.Response(text=json.dumps(payload), headers={'Content-Type': 'application/json'})
+
+    def _day_infos_standard(self):
+        # Records for 2025-06-10 with offpeak=00:00-06:00:
         #   Grid offpeak = (300 + 240) / 12 = 45 Wh
         #   Grid peak    = 600 / 12          = 50 Wh   → getCalcImport() = 95 Wh
         #   PV peak      = 2400 / 12         = 200 Wh  → getCalcPV()     = 200 Wh
-        payload = {
-            "code": 0,
-            "msg": "Success",
-            "data": {
-                "infos": [
-                    {
-                        "label": "PV",
-                        "unit": "W",
-                        "records": [
-                            {"time": "00:00", "value": "0.0",    "updateTime": None},
-                            {"time": "00:05", "value": "0.0",    "updateTime": None},
-                            {"time": "08:00", "value": "2400.0", "updateTime": None}
-                        ]
-                    },
-                    {
-                        "label": "Battery",
-                        "unit": "W",
-                        "records": [
-                            {"time": "00:00", "value": "0.0", "updateTime": None},
-                            {"time": "00:05", "value": "0.0", "updateTime": None},
-                            {"time": "08:00", "value": "0.0", "updateTime": None}
-                        ]
-                    },
-                    {
-                        "label": "SOC",
-                        "unit": "%",
-                        "records": [
-                            {"time": "00:00", "value": "50.0", "updateTime": None},
-                            {"time": "00:05", "value": "50.0", "updateTime": None},
-                            {"time": "08:00", "value": "60.0", "updateTime": None}
-                        ]
-                    },
-                    {
-                        "label": "Load",
-                        "unit": "W",
-                        "records": [
-                            {"time": "00:00", "value": "300.0", "updateTime": None},
-                            {"time": "00:05", "value": "240.0", "updateTime": None},
-                            {"time": "08:00", "value": "600.0", "updateTime": None}
-                        ]
-                    },
-                    {
-                        "label": "Grid",
-                        "unit": "W",
-                        "records": [
-                            {"time": "00:00", "value": "300.0", "updateTime": None},
-                            {"time": "00:05", "value": "240.0", "updateTime": None},
-                            {"time": "08:00", "value": "600.0", "updateTime": None}
-                        ]
-                    }
-                ]
-            },
-            "success": True
-        }
-        headers = {'Content-Type': 'application/json'}
-        return web.Response(text=json.dumps(payload), headers=headers)
+        return [
+            {"label": "PV",      "unit": "W", "records": [
+                {"time": "00:00", "value": "0.0",    "updateTime": None},
+                {"time": "00:05", "value": "0.0",    "updateTime": None},
+                {"time": "08:00", "value": "2400.0", "updateTime": None}]},
+            {"label": "Battery", "unit": "W", "records": [
+                {"time": "00:00", "value": "0.0", "updateTime": None},
+                {"time": "00:05", "value": "0.0", "updateTime": None},
+                {"time": "08:00", "value": "0.0", "updateTime": None}]},
+            {"label": "SOC",     "unit": "%", "records": [
+                {"time": "00:00", "value": "50.0", "updateTime": None},
+                {"time": "00:05", "value": "50.0", "updateTime": None},
+                {"time": "08:00", "value": "60.0", "updateTime": None}]},
+            {"label": "Load",    "unit": "W", "records": [
+                {"time": "00:00", "value": "300.0", "updateTime": None},
+                {"time": "00:05", "value": "240.0", "updateTime": None},
+                {"time": "08:00", "value": "600.0", "updateTime": None}]},
+            {"label": "Grid",    "unit": "W", "records": [
+                {"time": "00:00", "value": "300.0", "updateTime": None},
+                {"time": "00:05", "value": "240.0", "updateTime": None},
+                {"time": "08:00", "value": "600.0", "updateTime": None}]},
+        ]
+
+    def _day_infos_peak_export(self):
+        # Records for 2025-06-11: single peak record with Grid exporting (-600 W).
+        # With offpeak=00:00-06:00 and 08:00 in peak:
+        #   value = -600/12 = -50 → extra_load=2.3, export=47.7
+        #   Grid.peakexport = 47.7 → getCalcExport() = 47.7 Wh
+        return [
+            {"label": "PV",      "unit": "W", "records": [
+                {"time": "08:00", "value": "0.0",    "updateTime": None}]},
+            {"label": "Battery", "unit": "W", "records": [
+                {"time": "08:00", "value": "0.0",    "updateTime": None}]},
+            {"label": "SOC",     "unit": "%", "records": [
+                {"time": "08:00", "value": "50.0",   "updateTime": None}]},
+            {"label": "Load",    "unit": "W", "records": [
+                {"time": "08:00", "value": "300.0",  "updateTime": None}]},
+            {"label": "Grid",    "unit": "W", "records": [
+                {"time": "08:00", "value": "-600.0", "updateTime": None}]},
+        ]

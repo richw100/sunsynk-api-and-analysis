@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime
 
 from analysis.calculations import (
-    PriceData, VirtualBattery, EnergySummary, EnergySummaryAggregator, QueryType
+    PriceData, VirtualBattery, EnergySummary, EnergySummaryAggregator, EnergyPrices, QueryType
 )
 
 
@@ -299,3 +299,143 @@ def test_aggregator_raises_when_empty():
         agg.update_last_summary(make_day())
     with pytest.raises(IndexError):
         agg.get_last_summary()
+
+
+# ─── VirtualBattery.discharge() ──────────────────────────────────────────────
+
+def test_virtual_battery_discharge_exports_during_window():
+    battery = VirtualBattery(PriceData(), batterySize=5000)
+    battery.export = 1
+    battery.batteryStatus = 3000
+    t = datetime.strptime("18:00", "%H:%M")  # within 17:00-19:00 export window
+    battery.discharge(t)
+    assert battery.batteryStatus < 3000
+    assert battery.exported > 0
+
+
+def test_virtual_battery_discharge_no_effect_outside_window():
+    battery = VirtualBattery(PriceData(), batterySize=5000)
+    battery.export = 1
+    battery.batteryStatus = 3000
+    t = datetime.strptime("12:00", "%H:%M")  # outside export window
+    battery.discharge(t)
+    assert battery.batteryStatus == 3000
+    assert battery.exported == 0
+
+
+def test_virtual_battery_pv_charge_does_not_overflow_battery():
+    # When batteryStatus + charge > batterySize, no charge is added.
+    battery = VirtualBattery(PriceData(), batterySize=5000, UsePV=1,
+                             startCharging=1000, stopCharging=2000)
+    battery.batteryStatus = 4990
+    battery.shouldPVCharge = 1
+    t = datetime.strptime("12:00", "%H:%M")
+    battery.PVCharge(200, t)  # 200*0.96=192; 4990+192=5182 > 5000 → no charge
+    assert battery.batteryStatus == 4990
+    assert battery.PVInput == 0
+
+
+def test_virtual_battery_get_pv_charge_kwh():
+    battery = VirtualBattery(PriceData(), batterySize=5000, UsePV=1,
+                             startCharging=1000, stopCharging=2000)
+    battery.batteryStatus = 500
+    t = datetime.strptime("12:00", "%H:%M")
+    battery.PVCharge(100, t)
+    assert battery.getPVChargekWh() == pytest.approx(round(100 * 0.96 / 1000, 2))
+
+
+# ─── EnergyPrices ────────────────────────────────────────────────────────────
+
+SAMPLE_PRICES = {
+    'data': {
+        'prices': [
+            {
+                'datefrom': '2024-01-01',
+                'dateto': '2024-12-31',
+                'offpeakRate': '0.075',
+                'offpeakStart': '00:30',
+                'offpeakStop': '07:30',
+                'peakRate': '0.28',
+                'exportRate': '0.15',
+                'standingCharge': '0.60',
+                'CompareStandingCharge': '0.53',
+                'CompareRate': '0.25',
+                'InterestRate': '3.5'
+            },
+            {
+                'datefrom': '2025-01-01',
+                'dateto': '2026-12-31',
+                'offpeakRate': '0.085',
+                'offpeakStart': '00:30',
+                'offpeakStop': '07:30',
+                'peakRate': '0.30',
+                'exportRate': '0.165',
+                'standingCharge': '0.65',
+                'CompareStandingCharge': '0.55',
+                'CompareRate': '0.27',
+                'InterestRate': '3.7'
+            }
+        ]
+    }
+}
+
+
+def test_energy_prices_init():
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    assert ep.priceData is not None
+    assert ep.grandTotals is not None
+    assert ep.grandTotals['days'] == 0
+
+
+def test_energy_prices_check_date_switches_period():
+    # 2024-06-15 is before the default PriceData range (2025-07-10)
+    # so checkDate should switch to the 2024 period from SAMPLE_PRICES.
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    ep.checkDate('2024-06-15')
+    assert ep.priceData.currentPeak == pytest.approx(0.28)
+    assert ep.priceData.currentOffPeak == pytest.approx(0.075)
+
+
+def test_energy_prices_check_date_in_range_no_switch():
+    # 2025-09-01 is within the default range (2025-07-10 to 2026-09-10);
+    # peak rate should remain at the PriceData default.
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    default_peak = ep.priceData.currentPeak
+    ep.checkDate('2025-09-15')  # not the 1st, so no newMonth either
+    assert ep.priceData.currentPeak == default_peak
+
+
+def test_energy_prices_check_date_new_month_does_not_raise():
+    # First-of-month date triggers newMonth() on the last EnergySummary.
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    ep.checkDate('2025-09-01')  # within default range, but first of month
+    totals = ep.get_grand_totals()
+    assert totals is not None
+
+
+def test_energy_prices_add_data_and_get_grand_totals():
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    ep.checkDate('2024-06-15')  # switch to 2024 period
+    ep.addData(make_day(calc_import=100, calc_import_peak=60, calc_import_offpeak=40,
+                        calc_export=20, calc_export_peak=20, calc_export_offpeak=0,
+                        calc_pv=200, calc_load=200, calc_load_peak=160, calc_load_offpeak=40,
+                        supplied_load=5.0, supplied_import=2.0, supplied_pv=4.0, supplied_export=1.0))
+    totals = ep.get_grand_totals()
+    assert totals['days'] == 1
+    assert totals['totalCalcImport'] == pytest.approx(100 / 1000, rel=1e-6)
+
+
+def test_energy_prices_get_grand_totals_uses_cache():
+    # Second call to get_grand_totals() should return the cached result.
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery)
+    ep.addData(make_day(calc_import=50, calc_import_peak=50, calc_import_offpeak=0,
+                        calc_load=50, calc_load_peak=50, calc_load_offpeak=0))
+    totals1 = ep.get_grand_totals()
+    totals2 = ep.get_grand_totals()  # should use cached result (changed=0)
+    assert totals1 == totals2
