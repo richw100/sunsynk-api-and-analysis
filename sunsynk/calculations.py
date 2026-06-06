@@ -34,7 +34,7 @@ class PriceData:
         self.originalPrice = 6210 - 3.53 # £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
         self.InterestRate = 3.7
 
-class Battery:
+class VirtualBattery:
     def __init__(self, priceData: PriceData, batterySize = 5000, UsePV = 0, startCharging = 1000, stopCharging = 2000 ):
         self.batterySize = batterySize
         self.batteryStatus = batterySize
@@ -151,7 +151,7 @@ class Battery:
 
         
 class EnergySummary:
-    def __init__(self, priceData: PriceData, battery: Battery, currentCumulativeSavings = 0, currentAltInvestmentValue = 0, remainderInput = 0):
+    def __init__(self, priceData: PriceData, battery: VirtualBattery, currentCumulativeSavings = 0, currentAltInvestmentValue = 0, remainderInput = 0):
         
         self.battery = battery
         
@@ -394,12 +394,12 @@ class EnergySummaryAggregator:
 
 
 class EnergyPrices:
-    def __init__ (self, prices, battery: Battery):
+    def __init__ (self, prices, battery: VirtualBattery):
         self.prices = prices
         self.aggregator = EnergySummaryAggregator()
         self.priceData = PriceData()
         self.origbattery = battery
-        self.battery = Battery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
+        self.battery = VirtualBattery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
         self.aggregator.add_summary(EnergySummary(self.priceData, self.battery, 0, self.priceData.originalPrice))
         self.grandTotals = self.aggregator.get_grand_totals()
         self.changed = 1
@@ -432,7 +432,7 @@ class EnergyPrices:
                         self.priceData.InterestRate = float(item['InterestRate']) 
                     self.priceData.currentStart = newStart
                     self.priceData.currentStop = newStop
-                    self.battery = Battery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
+                    self.battery = VirtualBattery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
                     
                     lastSummary = self.aggregator.get_last_summary()
                     remainder = lastSummary.getRemainder()

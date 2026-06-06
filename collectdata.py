@@ -6,7 +6,7 @@ import re
 
 from sunsynk.client import SunsynkClient
 
-from sunsynk.calculations import Battery
+from sunsynk.calculations import VirtualBattery
 from sunsynk.calculations import PriceData, EnergyPrices
 
 from datetime import datetime
@@ -67,7 +67,7 @@ async def main():
             pricesFilename = "inverterData/" + energyPricesJson
             
             tmpPrice = PriceData()
-            battery = Battery( tmpPrice, batterySize, usePV, startCharge, stopCharge) 
+            battery = VirtualBattery( tmpPrice, batterySize, usePV, startCharge, stopCharge)
 
             energyPricesJson = None
 

@@ -5,7 +5,7 @@ import math
 from enum import Enum
 
 from sunsynk.resource import Resource
-from sunsynk.calculations import Battery, QueryType
+from sunsynk.calculations import VirtualBattery, QueryType
 from datetime import datetime
 
 class EnergyMonth(Resource):
@@ -41,7 +41,7 @@ class EnergyMonth(Resource):
         return self.Import    
 
 class EnergySummary(Resource):
-    def __init__(self, data, month: EnergyMonth, battery: Battery, offpeakstart = "00:00", offpeakstop = "00:07", date = "", isLoad = 0):
+    def __init__(self, data, month: EnergyMonth, battery: VirtualBattery, offpeakstart = "00:00", offpeakstop = "00:07", date = "", isLoad = 0):
         self.label = data['label']
         #print(f"Local label: {self.label}")
         self.records = data['records']
@@ -113,7 +113,7 @@ class EnergySummary(Resource):
             self.offpeakpercentage = self.offpeak / (self.offpeak + self.peak)
  
 class EnergyDay(Resource):
-    def __init__(self, data, date: str, month: EnergyMonth, battery: Battery, offpeakstart: str, offpeakstop: str):
+    def __init__(self, data, date: str, month: EnergyMonth, battery: VirtualBattery, offpeakstart: str, offpeakstop: str):
         self.data = data
         energy = json.loads(json.dumps(self.data['infos']))
         for item in energy:
