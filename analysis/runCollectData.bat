@@ -9,5 +9,5 @@ SET /p SUNSYNK_PASSWORD="Enter Sunsynk Password:"
 )
 
 @ECHO ON
-python collectdata.py Off 5000 on 2500 5000 
+python analysis\collectdata.py Off 5000 on 2500 5000
 
