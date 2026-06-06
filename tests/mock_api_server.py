@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from sunsynk.client import SunsynkClient
+from analysis.energy_client import SunsynkEnergyClient
 
 
 class MockApiServer:
@@ -26,10 +27,19 @@ class MockApiServer:
         self.app.router.add_get('/api/v1/inverter/battery/1029384756/realtime', self.get_inverter_realtime_battery)
         self.app.router.add_get('/api/v1/inverter/1029384756/realtime/input', self.get_inverter_realtime_input)
         self.app.router.add_get('/api/v1/inverter/1029384756/realtime/output', self.get_inverter_realtime_output)
+        self.app.router.add_get('/api/v1/plant/energy/{plant_id}/month', self.get_energy_month)
+        self.app.router.add_get('/api/v1/plant/energy/{plant_id}/day', self.get_energy_day)
 
     async def client(self, username='myuser'):
         client = await self.aiohttp_client(self.app)
         return await SunsynkClient.create(username, 'letmein', base_url=f'http://{client.host}:{client.port}')
+
+    async def energy_client(self, username='myuser'):
+        client = await self.aiohttp_client(self.app)
+        base_url = f'http://{client.host}:{client.port}'
+        ec = SunsynkEnergyClient(username, 'letmein', base_url)
+        await ec.login()
+        return ec
 
     async def get_public_key(self, request):
         payload = {
@@ -309,4 +319,111 @@ class MockApiServer:
         }
         return web.Response(text=json.dumps(payload), headers=headers)
 
+    async def get_energy_month(self, request):
+        # Daily totals (kWh) for the month; records keyed by date string YYYY-MM-DD.
+        # EnergyDay looks up its date in these records to get supplied kWh figures.
+        payload = {
+            "code": 0,
+            "msg": "Success",
+            "data": {
+                "infos": [
+                    {
+                        "label": "Load",
+                        "records": [
+                            {"time": "2025-06-10", "value": "5.2"},
+                            {"time": "2025-06-11", "value": "4.8"}
+                        ]
+                    },
+                    {
+                        "label": "PV",
+                        "records": [
+                            {"time": "2025-06-10", "value": "8.3"},
+                            {"time": "2025-06-11", "value": "6.1"}
+                        ]
+                    },
+                    {
+                        "label": "Export",
+                        "records": [
+                            {"time": "2025-06-10", "value": "2.1"},
+                            {"time": "2025-06-11", "value": "1.5"}
+                        ]
+                    },
+                    {
+                        "label": "Import",
+                        "records": [
+                            {"time": "2025-06-10", "value": "1.4"},
+                            {"time": "2025-06-11", "value": "1.8"}
+                        ]
+                    }
+                ]
+            },
+            "success": True
+        }
+        headers = {'Content-Type': 'application/json'}
+        return web.Response(text=json.dumps(payload), headers=headers)
 
+    async def get_energy_day(self, request):
+        # 5-minute interval records (W) for 2025-06-10.
+        # Records at 00:00 and 00:05 fall in the offpeak window (00:00-06:00);
+        # the record at 08:00 falls in the peak window.
+        #
+        # Expected calculated values with offpeakstart=00:00, offpeakstop=06:00:
+        #   Grid offpeak = (300 + 240) / 12 = 45 Wh
+        #   Grid peak    = 600 / 12          = 50 Wh   → getCalcImport() = 95 Wh
+        #   PV peak      = 2400 / 12         = 200 Wh  → getCalcPV()     = 200 Wh
+        payload = {
+            "code": 0,
+            "msg": "Success",
+            "data": {
+                "infos": [
+                    {
+                        "label": "PV",
+                        "unit": "W",
+                        "records": [
+                            {"time": "00:00", "value": "0.0",    "updateTime": None},
+                            {"time": "00:05", "value": "0.0",    "updateTime": None},
+                            {"time": "08:00", "value": "2400.0", "updateTime": None}
+                        ]
+                    },
+                    {
+                        "label": "Battery",
+                        "unit": "W",
+                        "records": [
+                            {"time": "00:00", "value": "0.0", "updateTime": None},
+                            {"time": "00:05", "value": "0.0", "updateTime": None},
+                            {"time": "08:00", "value": "0.0", "updateTime": None}
+                        ]
+                    },
+                    {
+                        "label": "SOC",
+                        "unit": "%",
+                        "records": [
+                            {"time": "00:00", "value": "50.0", "updateTime": None},
+                            {"time": "00:05", "value": "50.0", "updateTime": None},
+                            {"time": "08:00", "value": "60.0", "updateTime": None}
+                        ]
+                    },
+                    {
+                        "label": "Load",
+                        "unit": "W",
+                        "records": [
+                            {"time": "00:00", "value": "300.0", "updateTime": None},
+                            {"time": "00:05", "value": "240.0", "updateTime": None},
+                            {"time": "08:00", "value": "600.0", "updateTime": None}
+                        ]
+                    },
+                    {
+                        "label": "Grid",
+                        "unit": "W",
+                        "records": [
+                            {"time": "00:00", "value": "300.0", "updateTime": None},
+                            {"time": "00:05", "value": "240.0", "updateTime": None},
+                            {"time": "08:00", "value": "600.0", "updateTime": None}
+                        ]
+                    }
+                ]
+            },
+            "success": True
+        }
+        headers = {'Content-Type': 'application/json'}
+        return web.Response(text=json.dumps(payload), headers=headers)

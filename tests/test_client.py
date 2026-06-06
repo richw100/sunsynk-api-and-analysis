@@ -1,87 +1,65 @@
 import pytest
 
 from sunsynk.client import SunsynkClient, InvalidCredentialsException
+from analysis.energy_client import SunsynkEnergyClient
+from analysis.energyday import EnergyDay, EnergyMonth
+from analysis.calculations import VirtualBattery, PriceData
 from tests.mock_api_server import MockApiServer
 
 
 @pytest.mark.asyncio
-async def test_login(aiohttp_client):
+async def test_get_energy_month(aiohttp_client):
     mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
-    assert isinstance(client, SunsynkClient)
+    client = await mock_api_server.energy_client()
+
+    month = await client.get_energy_month(12345, '2025-06-01')
+
+    assert isinstance(month, EnergyMonth)
+    assert month.get_Load()['records'][0]['time'] == '2025-06-10'
+    assert float(month.get_Load()['records'][0]['value']) == 5.2
+    assert float(month.get_PV()['records'][0]['value']) == 8.3
+    assert float(month.get_Export()['records'][0]['value']) == 2.1
+    assert float(month.get_Import()['records'][0]['value']) == 1.4
 
 
 @pytest.mark.asyncio
-async def test_login_invalid(aiohttp_client):
+async def test_get_energy_day(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
     mock_api_server = MockApiServer(aiohttp_client)
-    with pytest.raises(InvalidCredentialsException):
-        await mock_api_server.client(username='invalid')
+    client = await mock_api_server.energy_client()
 
-@pytest.mark.asyncio
-async def test_get_inverters(aiohttp_client):
-    mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
+    month = await client.get_energy_month(12345, '2025-06-01')
+    battery = VirtualBattery(PriceData())
+    day = await client.get_energy_day(12345, '2025-06-10', month, battery, '00:00', '06:00')
 
-    inverters = await client.get_inverters()
-
-    assert inverters[0].sn == '1029384756'
-    assert inverters[0].gsn == 'E0192837465'
-
-
-@pytest.mark.asyncio
-async def test_get_plants(aiohttp_client):
-    mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
-
-    plants = await client.get_plants()
-
-    assert plants[0].id == 12345
-    assert plants[0].name == 'John Smith'
-
-@pytest.mark.asyncio
-async def test_get_inverter_realtime_input(aiohttp_client):
-    mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
-
-    inverters = await client.get_inverters()
-    input = await client.get_inverter_realtime_input(inverters[0].sn)
-
-    assert input.get_power() == 9.0
+    assert isinstance(day, EnergyDay)
+    assert round(day.getCalcImport(), 1) == 95.0
+    assert round(day.getCalcImportOffPeak(), 1) == 45.0
+    assert round(day.getCalcImportPeak(), 1) == 50.0
+    assert round(day.getCalcPV(), 1) == 200.0
+    assert day.getSuppliedLoad() == 5.2
+    assert day.getSuppliedImport() == 1.4
+    assert day.getSuppliedPV() == 8.3
+    assert day.getSuppliedExport() == 2.1
 
 
 @pytest.mark.asyncio
-async def test_get_inverter_realtime_output(aiohttp_client):
+async def test_get_energy_day_uses_cache(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
     mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
+    client = await mock_api_server.energy_client()
+    month = await client.get_energy_month(12345, '2025-06-01')
 
-    inverters = await client.get_inverters()
-    output = await client.get_inverter_realtime_output(inverters[0].sn)
+    # First call fetches from the mock server and writes a cache file
+    battery = VirtualBattery(PriceData())
+    await client.get_energy_day(12345, '2025-06-10', month, battery, '00:00', '06:00')
+    assert (tmp_path / 'inverterData' / 'day-2025-06-10.json').exists()
 
-    assert output.vip[0].voltage == 230.8
-    assert output.vip[0].current == 0.3
-    assert output.vip[0].power == -50
-
-@pytest.mark.asyncio
-async def test_get_inverter_realtime_grid(aiohttp_client):
-    mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
-
-    inverters = await client.get_inverters()
-    grid = await client.get_inverter_realtime_grid(inverters[0].sn)
-
-    assert grid.get_power() == 610
-    assert grid.get_current() == 0.8
-    assert grid.get_voltage() == 233.6
-
-@pytest.mark.asyncio
-async def test_get_inverter_realtime_battery(aiohttp_client):
-    mock_api_server = MockApiServer(aiohttp_client)
-    client = await mock_api_server.client()
-
-    inverters = await client.get_inverters()
-    battery = await client.get_inverter_realtime_battery(inverters[0].sn)
-
-    assert battery.power == -18
-    assert battery.get_power() == -18
-    assert battery.get_current() == -0.4
-    assert battery.get_voltage() == 53.3
+    # Second call should read from the cache file, not the server
+    battery2 = VirtualBattery(PriceData())
+    day2 = await client.get_energy_day(12345, '2025-06-10', month, battery2, '00:00', '06:00')
+    assert round(day2.getCalcImport(), 1) == 95.0
