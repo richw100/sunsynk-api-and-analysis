@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-./venv/bin/pylint sunsynk
+./venv/bin/pylint analysis

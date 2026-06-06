@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This project is a fork of [sunsynk-api-client](https://github.com/jamesridgway/sunsynk-api-client) by James Ridgway, extended with energy cost analysis and battery simulation tools.
+This project builds on [sunsynk-api-client](https://pypi.org/project/sunsynk-api-client/) by James Ridgway (installed via pip) and adds energy cost analysis and battery simulation tools.
 
 ## Setup
 
@@ -20,7 +20,7 @@ export SUNSYNK_PASSWORD=...
 
 ```bash
 ./run-tests.sh         # run tests with coverage
-./run-pylint.sh        # lint the sunsynk package
+./run-pylint.sh        # lint the analysis package
 
 # Run a single test
 ./venv/bin/pytest tests/test_client.py::test_get_inverters
@@ -33,16 +33,12 @@ python analysis/collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBa
 
 ## Architecture
 
-The project has three top-level packages:
+### `sunsynk/` — upstream API client library (PyPI dependency)
 
-### `sunsynk/` — upstream API client library (unmodified)
+Installed via `pip install sunsynk-api-client`. A thin async wrapper around the Sunsynk REST API (`https://api.sunsynk.net`). Authentication uses RSA+MD5.
 
-A thin async wrapper around the Sunsynk REST API (`https://api.sunsynk.net`). Authentication uses RSA+MD5 — the client fetches a public key, RSA-encrypts the password, and signs the request with MD5 (see `sunsynk/client.py:login`). The `cryptography` package is used for RSA encryption.
-
-- `SunsynkClient` — upstream library class (v1.0.9); async context manager. Use `async with SunsynkClient(u, p) as client:` or `await SunsynkClient.create(u, p)`.
-- API data models: `Battery` (`battery.py`), `Grid`, `Input`, `Output`, `Inverter`, `Plant`, `Vip` — all extend `Resource` (provides `__repr__`)
-
-Do not add custom code here — this package tracks the upstream library and should remain clean for easy updates.
+- `SunsynkClient` — async context manager. Use `async with SunsynkClient(u, p) as client:` or `await SunsynkClient.create(u, p)`.
+- API data models: `Battery`, `Grid`, `Input`, `Output`, `Inverter`, `Plant`, `Vip` — all extend `Resource`
 
 ### `analysis/` — our extensions and energy analysis engine
 
