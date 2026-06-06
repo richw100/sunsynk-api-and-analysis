@@ -2,8 +2,8 @@ import json
 from datetime import datetime
 
 from sunsynk.client import SunsynkClient
-from sunsynk.calculations import VirtualBattery
-from sunsynk.energyday import EnergyDay, EnergyMonth
+from analysis.calculations import VirtualBattery
+from analysis.energyday import EnergyDay, EnergyMonth
 
 
 class SunsynkEnergyClient(SunsynkClient):

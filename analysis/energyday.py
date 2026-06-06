@@ -5,7 +5,7 @@ import math
 from enum import Enum
 
 from sunsynk.resource import Resource
-from sunsynk.calculations import VirtualBattery, QueryType
+from analysis.calculations import VirtualBattery, QueryType
 from datetime import datetime
 
 class EnergyMonth(Resource):

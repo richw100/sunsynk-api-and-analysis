@@ -4,10 +4,10 @@ import json
 import sys
 import re
 
-from sunsynk.energy_client import SunsynkEnergyClient
+from analysis.energy_client import SunsynkEnergyClient
 
-from sunsynk.calculations import VirtualBattery
-from sunsynk.calculations import PriceData, EnergyPrices
+from analysis.calculations import VirtualBattery
+from analysis.calculations import PriceData, EnergyPrices
 
 from datetime import datetime
 
