@@ -32,33 +32,29 @@ python collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBattery:ON|
 
 ## Architecture
 
-There are two distinct layers:
+The project has three top-level packages:
 
-### 1. API client library (`sunsynk/`)
+### `sunsynk/` — upstream API client library (unmodified)
 
-A thin async wrapper around the Sunsynk REST API (`https://api.sunsynk.net`). Authentication uses RSA+MD5 — the client fetches a public key, RSA-encrypts the password, and signs the request with MD5 (see `client.py:login`). The `cryptography` package is used for RSA encryption.
+A thin async wrapper around the Sunsynk REST API (`https://api.sunsynk.net`). Authentication uses RSA+MD5 — the client fetches a public key, RSA-encrypts the password, and signs the request with MD5 (see `sunsynk/client.py:login`). The `cryptography` package is used for RSA encryption.
 
 - `SunsynkClient` — upstream library class (v1.0.9); async context manager. Use `async with SunsynkClient(u, p) as client:` or `await SunsynkClient.create(u, p)`.
-- `SunsynkEnergyClient` (`energy_client.py`) — our subclass of `SunsynkClient` that adds energy history methods and local file caching. This is what `collectdata.py` uses.
 - API data models: `Battery` (`battery.py`), `Grid`, `Input`, `Output`, `Inverter`, `Plant`, `Vip` — all extend `Resource` (provides `__repr__`)
 
-`SunsynkEnergyClient` accesses the parent's private `__get` HTTP method via its mangled name `_SunsynkClient__get`. This is intentional — noted in the class docstring.
+Do not add custom code here — this package tracks the upstream library and should remain clean for easy updates.
 
-`SunsynkEnergyClient._get_cached()` caches daily API responses as JSON files under `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file already exists (does **not** cache the current day).
+### `analysis/` — our extensions and energy analysis engine
 
-### 2. Energy analysis tool (`collectdata.py` + `sunsynk/calculations.py` + `sunsynk/energyday.py`)
+- `energy_client.py` — `SunsynkEnergyClient(SunsynkClient)`: subclass that adds `get_energy_day()`, `get_energy_month()`, and `_get_cached()` (local file caching of daily API responses to `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file exists and not caching the current day). Accesses the parent's private HTTP method via its mangled name `_SunsynkClient__get` — noted in the class docstring.
+- `energyday.py` — `EnergyDay` and `EnergyMonth`: parse the 5-minute interval timeseries from the plant energy endpoints.
+- `calculations.py` — the analysis engine:
+  - `PriceData` — current energy tariff rates (off-peak/peak/export rates, standing charge, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.checkDate()`.
+  - `VirtualBattery` — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from `sunsynk/battery.py`'s `Battery` (the realtime API response model).
+  - `EnergySummary` — accumulates per-day data for a single tariff period; `newMonth()` compounds interest on cumulative savings.
+  - `EnergySummaryAggregator` — holds one `EnergySummary` per tariff period and computes cross-period grand totals.
+  - `EnergyPrices` — top-level orchestrator; reads `_EnergyPrices.json`, calls `checkDate()` to switch tariff periods, and exposes `print_*` methods for the final report.
 
-`collectdata.py` is a standalone CLI script that iterates over all historical months/days, calculates cost and savings, and prints a financial analysis of the solar/battery installation. It uses `SunsynkEnergyClient`.
-
-`sunsynk/energyday.py` parses the 5-minute interval timeseries returned by the plant energy endpoints into `EnergyDay` and `EnergyMonth` objects.
-
-`sunsynk/calculations.py` contains the analysis engine:
-
-- `PriceData` — holds the current energy tariff rates (off-peak rate, peak rate, export rate, standing charge, compare rate, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.checkDate()`.
-- `VirtualBattery` — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from `sunsynk/battery.py`'s `Battery` (the API response model for realtime battery state).
-- `EnergySummary` — accumulates per-day data for a single tariff period; supports `newMonth()` to compound interest on cumulative savings.
-- `EnergySummaryAggregator` — holds a list of `EnergySummary` objects (one per tariff period) and computes cross-period grand totals.
-- `EnergyPrices` — top-level orchestrator; reads `_EnergyPrices.json` for tariff history, calls `checkDate()` on each day to switch tariff periods, and exposes `print_*` methods for the final report.
+### `inverterData/` — local data cache (not in git)
 
 ### Energy price data files (`inverterData/_EnergyPrices*.json`)
 
