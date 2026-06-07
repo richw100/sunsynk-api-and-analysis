@@ -1,6 +1,6 @@
 {
     "showDays": "OFF",
-    "energyPrices": ["_EnergyPrices.json","_EnergyPrices-E.On+Fuse-Jun2026.json"],
+    "energyPrices": ["_EnergyPrices-E.On+Fuse-Jun2026.json"],
     "startDate": "",
     "stopDate": "",
     "scanFromYear": 2025,
@@ -8,18 +8,36 @@
     "_commentOriginalPrice": "Original price = £6210 Take off £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)",
     "offPeakShift": "OFF",
     "offPeakBaseline": 0.96,
-    "virtualBattery": {
-        "enabled": "OFF",
-        "batterySize": 5000,
-        "usePV": "ON",
-        "startCharge": 2500,
-        "stopCharge": 5000,
-        "exportWindowStart": "17:00",
-        "exportWindowStop": "19:00",
-        "useExport": "OFF",
-        "dischargeEfficiency": 0.92,
-        "pvChargeEfficiency": 0.96,
-        "maxOutputW": 2400,
-        "chargeEfficiency": 1.0
-    }
+    "virtualBattery": [
+        {
+	    "label": "5kWh PV Charging Enabled",
+            "enabled": "ON",
+            "batterySize": 5000,
+            "usePV": "ON",
+            "startCharge": 5000,
+            "stopCharge": 5000,
+            "exportWindowStart": "21:00",
+            "exportWindowStop": "23:00",
+            "useExport": "ON",
+            "dischargeEfficiency": 0.92,
+            "pvChargeEfficiency": 0.96,
+            "maxOutputW": 2400,
+            "chargeEfficiency": 0.96
+        },
+        {
+	    "label": "10kWh No PV",
+            "enabled": "ON",
+            "batterySize": 10000,
+            "usePV": "OFF",
+            "startCharge": 2500,
+            "stopCharge": 5000,
+            "exportWindowStart": "21:00",
+            "exportWindowStop": "23:00",
+            "useExport": "ON",
+            "dischargeEfficiency": 0.92,
+            "pvChargeEfficiency": 0.96,
+            "maxOutputW": 2400,
+            "chargeEfficiency": 0.96
+        }
+    ]
 }

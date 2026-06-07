@@ -83,6 +83,35 @@ To compare multiple tariff scenarios side by side, set `energyPrices` to a list 
 
 Each file is simulated independently and a `COMPARISON` table is printed at the end. A single filename string is still accepted for backward compatibility.
 
+### Multi-battery comparison
+
+To compare different battery scenarios (e.g. different sizes, PV charging on/off), set `virtualBattery` to a list of config objects in `config.json`. Each object can have a `label` and overrides only the fields that differ from the defaults — everything else is filled in automatically.
+
+```json
+{
+    "virtualBattery": [
+        {
+            "label": "5kWh grid-only",
+            "enabled": "ON",
+            "batterySize": 5000,
+            "usePV": "OFF",
+            "startCharge": 1000,
+            "stopCharge": 2000
+        },
+        {
+            "label": "10kWh with PV",
+            "enabled": "ON",
+            "batterySize": 10000,
+            "usePV": "ON",
+            "startCharge": 2500,
+            "stopCharge": 10000
+        }
+    ]
+}
+```
+
+The solar/tariff output is printed once (from the first battery config). Each battery config then gets its own `VIRTUAL BATTERY SIMULATION` section. A `BATTERY COMPARISON` table follows, showing all key battery metrics side by side with a `Difference` column when exactly two configs are provided.
+
 ## Understanding the output
 
 ### Interval-calculated vs inverter-reported values
@@ -167,6 +196,25 @@ Models the financial benefit of a battery that is fully charged from the grid ea
 ### COMPARISON (multi-tariff mode)
 
 When `energyPrices` lists multiple files, each tariff is simulated independently. After the per-tariff output, a columnar `COMPARISON` table shows all key metrics side by side. When exactly two tariff files are provided, a `Difference` column shows the change from the first to the second.
+
+---
+
+### BATTERY COMPARISON (multi-battery mode)
+
+When `virtualBattery` is a list, each battery config runs its own simulation against the same historical data. After the per-battery sections, a `BATTERY COMPARISON` table shows the key battery metrics side by side:
+
+- **Charged from grid (kWh)**: total energy drawn from the grid for charging
+- **Charging cost**: cost of that grid energy at the off-peak rate
+- **Peak-rate value delivered**: what the discharged energy would have cost at peak rate
+- **Foregone export income**: SEG income lost due to PV energy diverted to the battery
+- **Re-exported income**: SEG income earned from energy discharged back to the grid
+- **Days battery ran out**: days where the battery was exhausted before peak demand was met
+- **Net potential saving**: peak saving + export income − charging cost − foregone export
+- **Annualised**: net potential saving extrapolated to a full year
+
+When exactly two configs are provided, a `Difference` column shows the change from the first to the second.
+
+If both `energyPrices` and `virtualBattery` are lists, one `BATTERY COMPARISON` table is printed per tariff file, followed by the standard `COMPARISON` table for the first battery config.
 
 ---
 

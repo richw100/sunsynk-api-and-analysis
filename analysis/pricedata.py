@@ -14,6 +14,5 @@ class PriceData:
     off_peak_baseline_kwh: float = 0.96   # expected kWh/day at off-peak for a 7-hour window
     current_export: float = 0.165
     standing_charge: float = 0.6
-    # £3.53 adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
-    original_price: float = 6210 - 3.53
+    original_price: float = 6210 
     interest_rate: float = 3.7

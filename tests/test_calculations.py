@@ -482,6 +482,28 @@ def test_energy_prices_battery_enabled_returns_nonzero_savings():
     assert d['battery_savings'] != 0
 
 
+def test_energy_prices_forwards_use_export_to_simulation_battery():
+    # use_export=True on orig_battery must be preserved in the simulation battery
+    # (regression: EnergyPrices._make_battery was not forwarding use_export or charge_efficiency)
+    battery = VirtualBattery(PriceData(), battery_size=5000,
+                             use_export=True, charge_efficiency=0.95,
+                             export_window_start="21:00", export_window_stop="23:00")
+    ep = EnergyPrices(SAMPLE_PRICES, battery, battery_enabled=True)
+    ep.check_date('2024-06-15')
+    assert ep.battery.export == 1
+    assert ep.battery.charge_efficiency == pytest.approx(0.95)
+
+
+def test_energy_prices_use_export_tariff_switch_preserves_export():
+    # After a tariff switch, the new battery must also have use_export forwarded
+    battery = VirtualBattery(PriceData(), battery_size=5000, use_export=True,
+                             export_window_start="21:00", export_window_stop="23:00")
+    ep = EnergyPrices(SAMPLE_PRICES, battery, battery_enabled=True)
+    ep.check_date('2024-06-15')   # first tariff period
+    ep.check_date('2025-01-01')   # triggers tariff switch
+    assert ep.battery.export == 1
+
+
 # ─── Off-peak baseline ───────────────────────────────────────────────────────
 
 def test_off_peak_average_unchanged_for_7h_window():

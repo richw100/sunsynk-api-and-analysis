@@ -37,6 +37,8 @@ class EnergyPrices:
             discharge_efficiency=self.orig_battery.discharge_efficiency,
             pv_charge_efficiency=self.orig_battery.pv_charge_efficiency,
             max_output_w=self.orig_battery.max_output_w,
+            use_export=self.orig_battery.export == 1,
+            charge_efficiency=self.orig_battery.charge_efficiency,
         )
 
     def check_date(self, date_in: str):

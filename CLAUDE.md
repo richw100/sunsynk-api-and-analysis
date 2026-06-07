@@ -70,6 +70,8 @@ JSON files defining tariff periods with fields: `datefrom`, `dateto`, `offpeakRa
 
 `energyPrices` in `config.json` can be a single filename string or a list of filenames for side-by-side tariff comparison.
 
+`virtualBattery` in `config.json` can be a single config object (current default) or a list of config objects for side-by-side battery comparison. Each object in the list can have an optional `label` field and only needs to specify fields that differ from the defaults. CLI battery overrides (e.g. `batterySize:N`) apply to all configs in the list. In multi-battery mode, solar/tariff output is printed once (first config); battery sections are printed per config; a `BATTERY COMPARISON` table follows. `_make_battery(vb, price_data)` takes the battery config dict directly.
+
 ## Tests
 
 Tests use `pytest-asyncio` and `pytest-aiohttp`. The `MockApiServer` in `tests/mock_api_server.py` spins up a local aiohttp server that generates a real RSA key pair, serves it via `/anonymous/publicKey`, and verifies the encrypted password on login — matching the real API's auth flow. It also serves `/api/v1/plant/energy/{plant_id}/month` and `/api/v1/plant/energy/{plant_id}/day` for energy endpoint tests. Tests are all async and use `aiohttp_client` + `event_loop` fixtures.
