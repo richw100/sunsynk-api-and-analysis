@@ -116,62 +116,83 @@ class EnergyPrices:
         t = d['t']
         print("")
         print("ENERGY COSTS")
-        print(f"Total Cost of Energy: £{t['total_cost']}. With SEG: £{round(t['total_cost'] - d['seg'], 2)}")
-        print(f"SEG income: £{d['seg']}")
-        print(f"Total Cost of Energy without Solar: £{t['total_cost_without_solar']}")
-        print("")
+        print(f"  Total paid to energy company:                   £{t['total_cost']}")
+        print(f"  Total paid after deducting SEG income:          £{round(t['total_cost'] - d['seg'], 2)}")
+        print(f"  Smart Export Guarantee (SEG) income:            £{d['seg']}")
+        print(f"  Estimated cost without solar or battery:        £{t['total_cost_without_solar']}")
 
     def print_savings(self):
         d = self.get_derived()
         print("")
-        print(f"Solar savings excl. export: Calculated £{d['calc_savings_exc_seg']}. Supplied £{d['supplied_savings_exc_seg']}")
-        print(f"Solar savings incl. SEG:    Calculated £{d['bill_savings_inc_seg']}")
+        print("SOLAR SAVINGS  (interval-calculated | inverter-reported)")
+        print(f"  Savings excl. export income:   £{d['calc_savings_exc_seg']} | £{d['supplied_savings_exc_seg']}")
+        print(f"  Savings incl. SEG income:      £{d['bill_savings_inc_seg']}")
 
     def print_return_on_investment(self):
         d = self.get_derived()
         t = d['t']
-        print("\r\nRETURN ON INVESTMENT")
-        print(f"Calculated: £{t['total_savings_calc']} ({d['calc_roi_pct']}%). Supplied: £{t['total_savings_supplied']} ({d['supplied_roi_pct']}%)")
         print("")
-        print(f"Total savings inc offpeak shift: Calculated £{d['calc_savings']}. Supplied £{d['supplied_savings']}")
+        print("RETURN ON INVESTMENT")
+        print(f"  Solar savings from generation (excl. off-peak shifting):")
+        print(f"    Interval-calculated: £{t['total_savings_calc']} ({d['calc_roi_pct']}% of install cost)")
+        print(f"    Inverter-reported:   £{t['total_savings_supplied']} ({d['supplied_roi_pct']}% of install cost)")
+        print(f"  Total savings incl. off-peak load shifting:")
+        print(f"    Interval-calculated: £{d['calc_savings']}    Inverter-reported: £{d['supplied_savings']}")
         print("")
         last_summary = self.aggregator.get_last_summary()
         final_remainder = last_summary.get_remainder()
         cumulative = round(last_summary.cumulative_savings + final_remainder, 2)
+        alt = round(last_summary.alt_invest_value, 2)
         percentage = round(100 * cumulative / last_summary.alt_invest_value, 2)
-        print(f"Return on investment with cumulative interest = £{cumulative}/£{round(last_summary.alt_invest_value, 2)} = {percentage}%")
+        print(f"  Cumulative savings (with compound interest):    £{cumulative}")
+        print(f"  Alternative investment value (same interest):   £{alt}")
+        print(f"  Net ROI:                                        {percentage}%")
 
     def print_energy_summary(self):
         t = self.get_grand_totals()
         print("")
-        print(f"Total Days: {t['days']}")
-        print(f"Export: {t['total_calc_export']}kWh (vs {t['total_supplied_export']}kWh). Peak: {t['total_calc_export_peak']}kWh. OffPeak: {t['total_calc_export_off_peak']}kWh")
-        print(f"Import: {t['total_calc_import']}kWh (vs {t['total_supplied_import']}kWh). Peak: {t['total_calc_import_peak']}kWh. OffPeak: {t['total_calc_import_off_peak']}kWh")
-        print(f"PV: {t['total_calc_pv']}kWh (vs {t['total_supplied_pv']}kWh)")
-        print(f"Load: {t['total_calc_load']}kWh (vs {t['total_supplied_load']}kWh)")
+        print("ENERGY TOTALS")
+        print("  (Two values: interval-calculated from 5-min API data | inverter-reported daily kWh)")
+        print(f"  Export:  {t['total_calc_export']}kWh | {t['total_supplied_export']}kWh"
+              f"    Peak: {t['total_calc_export_peak']}kWh   Off-peak: {t['total_calc_export_off_peak']}kWh")
+        print(f"  Import:  {t['total_calc_import']}kWh | {t['total_supplied_import']}kWh"
+              f"    Peak: {t['total_calc_import_peak']}kWh   Off-peak: {t['total_calc_import_off_peak']}kWh")
+        print(f"  PV gen:  {t['total_calc_pv']}kWh | {t['total_supplied_pv']}kWh")
+        print(f"  Load:    {t['total_calc_load']}kWh | {t['total_supplied_load']}kWh")
+        print(f"  Days:    {t['days']}")
 
     def print_averages(self):
         t = self.get_grand_totals()
         days = t['days']
         if days > 0:
             print("")
-            print(f"Export avg/day: {round(t['total_calc_export']/days, 2)}kWh (vs {round(t['total_supplied_export']/days, 2)}kWh). Peak: {round(t['total_calc_export_peak']/days, 2)}kWh. OffPeak: {round(t['total_calc_export_off_peak']/days, 2)}kWh")
-            print(f"Import avg/day: {round(t['total_calc_import']/days, 2)}kWh (vs {round(t['total_supplied_import']/days, 2)}kWh). Peak: {round(t['total_calc_import_peak']/days, 2)}kWh. OffPeak: {round(t['total_calc_import_off_peak']/days, 2)}kWh")
+            print("DAILY AVERAGES  (interval-calculated | inverter-reported)")
+            print(f"  Export: {round(t['total_calc_export']/days, 2)}kWh | {round(t['total_supplied_export']/days, 2)}kWh"
+                  f"    Peak: {round(t['total_calc_export_peak']/days, 2)}kWh   Off-peak: {round(t['total_calc_export_off_peak']/days, 2)}kWh")
+            print(f"  Import: {round(t['total_calc_import']/days, 2)}kWh | {round(t['total_supplied_import']/days, 2)}kWh"
+                  f"    Peak: {round(t['total_calc_import_peak']/days, 2)}kWh   Off-peak: {round(t['total_calc_import_off_peak']/days, 2)}kWh")
 
     def print_totals(self):
         t = self.get_grand_totals()
         print("")
-        print(f"Offpeak Total: {t['total_calc_import_off_peak']}kWh. Expected Excess: {t['total_off_peak_excess']}kWh. Savings: £{t['total_off_peak_excess_savings']}")
+        print("OFF-PEAK IMPORT ANALYSIS")
+        print(f"  Total off-peak import:               {t['total_calc_import_off_peak']}kWh")
+        print(f"  Excess above expected baseline:      {t['total_off_peak_excess']}kWh  (load shifted to off-peak)")
+        print(f"  Saving from off-peak load shifting:  £{t['total_off_peak_excess_savings']}  (excess × (peak − off-peak rate))")
 
     def print_battery(self):
         d = self.get_derived()
         t = d['t']
         days = t['days']
         if days > 0:
-            print("\r\nBATTERY")
-            print(f"Potential usage: {t['battery_charge_amount']}kWh (vs {t['total_calc_import_peak']}kWh imported at peak). Average: {round(t['total_calc_import_peak']/days, 2)}kWh/day")
-            print(f"Cost from grid: £{t['battery_cost_from_grid']}. Peak price equivalent: £{t['battery_nominal_cost']}. Missed export: £{t['battery_lost_export_cost']}")
-            print(f"Re-exported: {t['battery_exported']}kWh = £{t['battery_export_cost']}")
-            print(f"Days ran out of battery: {t['battery_days_run_out']} ({t['battery_extra_required']}kWh short)")
-            print(f"Total potential saving: £{d['battery_savings']}")
-            print(f"Potential savings: £{round(d['battery_savings']/days, 2)}/day. £{round(365 * d['battery_savings']/days, 2)}/year")
+            print("")
+            print("VIRTUAL BATTERY SIMULATION  (models a battery charged at off-peak, discharged at peak)")
+            print(f"  Charged from grid at off-peak:              {t['battery_charge_amount']}kWh  (cost: £{t['battery_cost_from_grid']})")
+            print(f"  Peak-rate value of energy delivered:        £{t['battery_nominal_cost']}  (what it would cost drawn from grid at peak)")
+            print(f"  PV energy diverted to battery:              foregone export income: £{t['battery_lost_export_cost']}")
+            print(f"  Re-exported to grid during export window:   {t['battery_exported']}kWh = £{t['battery_export_cost']}")
+            print(f"  Days battery ran out before peak demand met: {t['battery_days_run_out']}  (shortfall: {t['battery_extra_required']}kWh)")
+            print(f"  Net potential saving:                       £{d['battery_savings']}")
+            print(f"    = peak saving £{t['battery_nominal_cost']} + export £{t['battery_export_cost']}"
+                  f" − charging cost £{t['battery_cost_from_grid']} − foregone export £{t['battery_lost_export_cost']}")
+            print(f"  Per day: £{round(d['battery_savings']/days, 2)}   Annualised: £{round(365 * d['battery_savings']/days, 2)}")

@@ -4,7 +4,7 @@
     "usePV": "ON",
     "startCharge": 2500,
     "stopCharge": 5000,
-    "energyPrices": "_EnergyPrices.json",
+    "energyPrices": ["_EnergyPrices.json","_EnergyPrices-E.On-Oct2025.json"],
     "startDate": "",
     "stopDate": "",
     "scanFromYear": 2025,
