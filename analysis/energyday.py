@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 from sunsynk.resource import Resource
-from analysis.calculations import QueryType
+from analysis.energysummary import QueryType
 from analysis.virtualbattery import VirtualBattery
 from analysis.energymonth import EnergyMonth
 

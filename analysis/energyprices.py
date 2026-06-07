@@ -3,7 +3,7 @@ from datetime import datetime
 
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
-from analysis.calculations import EnergySummary, EnergySummaryAggregator
+from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 
 
 class EnergyPrices:

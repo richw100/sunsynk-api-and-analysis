@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime
 
-from analysis.calculations import EnergySummary, EnergySummaryAggregator, QueryType
+from analysis.energysummary import EnergySummary, EnergySummaryAggregator, QueryType
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices

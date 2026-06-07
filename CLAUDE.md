@@ -50,12 +50,12 @@ Installed via `pip install sunsynk-api-client`. A thin async wrapper around the 
 - `energyday.py` — `IntervalSummary` and `EnergyDay`: parse the 5-minute interval timeseries from the plant energy day endpoint. `IntervalSummary` accumulates peak/offpeak Wh totals for one label (PV, Grid, Load); named `IntervalSummary` to avoid a name clash with `calculations.py`'s `EnergySummary`.
 - `pricedata.py` — `PriceData`: energy tariff rates (off-peak/peak/export rates, standing charge, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.checkDate()`.
 - `virtualbattery.py` — `VirtualBattery`: simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from the upstream `Battery` model (realtime API response).
-- `calculations.py` — `QueryType` enum, `EnergySummary`, and `EnergySummaryAggregator`:
+- `energysummary.py` — `QueryType` enum, `EnergySummary`, and `EnergySummaryAggregator`:
   - `EnergySummary` — accumulates per-day financial data for a single tariff period; `newMonth()` compounds interest on cumulative savings.
   - `EnergySummaryAggregator` — holds one `EnergySummary` per tariff period and computes cross-period grand totals.
 - `energyprices.py` — `EnergyPrices`: top-level orchestrator; reads `_EnergyPrices.json`, calls `checkDate()` to switch tariff periods, and exposes `print_*` methods for the final report.
 
-Import chain (no cycles): `pricedata` → `virtualbattery` → `calculations` → `energyprices`.
+Import chain (no cycles): `pricedata` → `virtualbattery` → `energysummary` → `energyprices`.
 
 ### `inverterData/` — local data cache (not in git)
 
