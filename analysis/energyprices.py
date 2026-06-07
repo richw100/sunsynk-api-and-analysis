@@ -9,11 +9,12 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 class EnergyPrices:
     def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
                  label: str = "", off_peak_baseline_kwh: float = 0.96,
-                 off_peak_shift_enabled: bool = True):
+                 off_peak_shift_enabled: bool = True, battery_enabled: bool = True):
         self.prices = prices
         self.label = label
         self._off_peak_baseline_kwh = off_peak_baseline_kwh
         self.off_peak_shift_enabled = off_peak_shift_enabled
+        self.battery_enabled = battery_enabled
         self.aggregator = EnergySummaryAggregator()
         self.price_data = PriceData()
         self.price_data.off_peak_baseline_kwh = off_peak_baseline_kwh
@@ -100,7 +101,7 @@ class EnergyPrices:
         battery_savings = round(
             t['battery_nominal_cost'] + t['battery_export_cost']
             - t['battery_cost_from_grid'] - t['battery_lost_export_cost'], 2
-        )
+        ) if self.battery_enabled else 0
 
         return {
             "t": t,
@@ -189,6 +190,8 @@ class EnergyPrices:
         print(f"  Saving from off-peak load shifting:  £{t['total_off_peak_excess_savings']}  (excess × (peak − off-peak rate))")
 
     def print_battery(self):
+        if not self.battery_enabled:
+            return
         d = self.get_derived()
         t = d['t']
         days = t['days']

@@ -55,7 +55,7 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `originalPrice:` | number | Installation cost (£) used for ROI calculation |
 | `exportWindowStart:` | `HH:MM` | Battery-to-grid export window start |
 | `exportWindowStop:` | `HH:MM` | Battery-to-grid export window stop |
-| `useExport:` | `ON`\|`OFF` | Sell battery charge back to grid during export window |
+| `useExportFromVirtualBattery:` | `ON`\|`OFF` | Sell virtual battery charge back to grid during export window |
 | `offPeakShift:` | `ON`\|`OFF` | Include off-peak load-shifting savings in totals and ROI (default: `ON`) |
 | `offPeakBaseline:` | float (kWh) | Expected daily off-peak import for a 7-hour window when no load is shifted (default: `0.96`) |
 
@@ -63,6 +63,7 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 
 | Argument | Values | Description |
 |---|---|---|
+| `useBattery:` | `ON`\|`OFF` | Enable virtual battery simulation (default: `ON`) |
 | `batterySize:` | integer (Wh) | Battery capacity |
 | `usePV:` | `ON`\|`OFF` | Charge battery from PV surplus |
 | `startCharge:` | integer (Wh) | Begin PV charging when battery falls below this level |

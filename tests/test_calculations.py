@@ -461,6 +461,27 @@ def test_energy_prices_get_grand_totals_uses_cache():
     assert totals1 == totals2
 
 
+def test_energy_prices_battery_disabled_zeroes_battery_savings():
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery, battery_enabled=False)
+    ep.check_date('2024-06-15')
+    ep.add_data(make_day(calc_import_peak=1000))
+    d = ep.get_derived()
+    # battery_savings should be 0 regardless of what grand_totals contains
+    assert d['battery_savings'] == 0
+
+
+def test_energy_prices_battery_enabled_returns_nonzero_savings():
+    # With a charged battery and peak import, savings should be non-zero
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery, battery_enabled=True)
+    ep.check_date('2024-06-15')
+    ep.battery.charge_amount = 5000   # simulate the battery having been charged
+    ep.battery.drawn = 3000            # and having delivered energy to loads
+    d = ep.get_derived()
+    assert d['battery_savings'] != 0
+
+
 # ─── Off-peak baseline ───────────────────────────────────────────────────────
 
 def test_off_peak_average_unchanged_for_7h_window():

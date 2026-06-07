@@ -53,8 +53,8 @@ def _parse_cli_args(argv):
             overrides['exportWindowStart'] = value
         elif key_lower == 'exportwindowstop':
             overrides['exportWindowStop'] = value
-        elif key_lower == 'useexport':
-            overrides['useExport'] = value
+        elif key_lower == 'useexportfromvirtualbattery':
+            overrides['useExportFromVirtualBattery'] = value
         elif key_lower == 'offpeakshift':
             overrides['offPeakShift'] = value
         elif key_lower == 'offpeakbaseline':
@@ -67,6 +67,8 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['maxOutputW'] = float(value)
         elif key_lower == 'chargeefficiency':
             overrides.setdefault('virtualBattery', {})['chargeEfficiency'] = float(value)
+        elif key_lower == 'usebattery':
+            overrides.setdefault('virtualBattery', {})['enabled'] = value
     return config_path, overrides
 
 
@@ -101,10 +103,11 @@ def _load_settings(argv):
         'originalPrice': 6206.47,
         'exportWindowStart': '17:00',
         'exportWindowStop': '19:00',
-        'useExport': 'OFF',
+        'useExportFromVirtualBattery': 'OFF',
         'offPeakShift': 'ON',
         'offPeakBaseline': 0.96,
         'virtualBattery': {
+            'enabled': 'ON',
             'dischargeEfficiency': 0.92,
             'pvChargeEfficiency': 0.96,
             'maxOutputW': 2400,
@@ -133,11 +136,12 @@ def _print_usage():
     print("  originalPrice:N         Installation cost for ROI calculation")
     print("  exportWindowStart:HH:MM Battery-to-grid export window start")
     print("  exportWindowStop:HH:MM  Battery-to-grid export window stop")
-    print("  useExport:ON|OFF        Sell battery back to grid during export window")
+    print("  useExportFromVirtualBattery:ON|OFF  Sell virtual battery back to grid during export window")
     print("  offPeakShift:ON|OFF     Include off-peak load-shifting in savings totals (default: ON)")
     print("  offPeakBaseline:N       Expected kWh/day at off-peak for a 7-hour window (default: 0.96)")
     print("")
     print("Virtual battery options:")
+    print("  useBattery:ON|OFF       Enable virtual battery simulation (default: ON)")
     print("  batterySize:N           Battery capacity in Wh")
     print("  usePV:ON|OFF            Charge battery from PV surplus")
     print("  startCharge:N           PV charging starts below this level (Wh)")
@@ -161,7 +165,7 @@ def _make_battery(settings, price_data):
         discharge_efficiency=float(vb['dischargeEfficiency']),
         pv_charge_efficiency=float(vb['pvChargeEfficiency']),
         max_output_w=float(vb['maxOutputW']),
-        use_export=bool(re.match('^on', str(settings['useExport']), re.IGNORECASE)),
+        use_export=bool(re.match('^on', str(settings['useExportFromVirtualBattery']), re.IGNORECASE)),
         charge_efficiency=float(vb['chargeEfficiency']),
     )
 
@@ -194,7 +198,8 @@ def _print_comparison(all_prices):
     row("SEG Income:",               [t['total_export_amount_calc'] for t in totals])
     row("Bill savings (inc SEG):",   [d['bill_savings_inc_seg'] for d in derived])
     row("Full solar savings:",       [d['calc_savings'] for d in derived])
-    row("Battery potential saving:", [d['battery_savings'] for d in derived])
+    if all_prices[0].battery_enabled:
+        row("Battery potential saving:", [d['battery_savings'] for d in derived])
 
 
 async def main():
@@ -229,7 +234,7 @@ async def main():
     print(
         f"originalPrice:£{original_price}  "
         f"exportWindow:{settings['exportWindowStart']}-{settings['exportWindowStop']}  "
-        f"useExport:{settings['useExport']}"
+        f"useExportFromVirtualBattery:{settings['useExportFromVirtualBattery']}"
     )
     print(
         f"Virtual battery: batterySize:{settings['batterySize']}  "
@@ -273,6 +278,7 @@ async def main():
                     original_price=original_price, label=label,
                     off_peak_baseline_kwh=float(settings['offPeakBaseline']),
                     off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
+                    battery_enabled=bool(re.match('^on', str(vb['enabled']), re.IGNORECASE)),
                 )
 
                 current_month = datetime.today().strftime('%Y-%m')

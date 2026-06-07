@@ -11,9 +11,14 @@
     "originalPrice": 6206.47,
     "exportWindowStart": "17:00",
     "exportWindowStop": "19:00",
+    "useExportFromVirtualBattery": "OFF",
+    "offPeakShift": "ON",
+    "offPeakBaseline": 0.96,
     "virtualBattery": {
+        "enabled": "ON",
         "dischargeEfficiency": 0.92,
         "pvChargeEfficiency": 0.96,
-        "maxOutputW": 2400
+        "maxOutputW": 2400,
+        "chargeEfficiency": 1.0
     }
 }
