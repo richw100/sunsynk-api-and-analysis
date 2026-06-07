@@ -2,12 +2,11 @@ from datetime import datetime
 
 from analysis.pricedata import PriceData
 
-exportStart = datetime.strptime("17:00", "%H:%M")
-exportStop = datetime.strptime("19:00", "%H:%M")
-
 
 class VirtualBattery:
-    def __init__(self, priceData: PriceData, batterySize=5000, UsePV=0, startCharging=1000, stopCharging=2000):
+    def __init__(self, priceData: PriceData, batterySize=5000, UsePV=0, startCharging=1000, stopCharging=2000,
+                 exportWindowStart="17:00", exportWindowStop="19:00",
+                 dischargeEfficiency=0.92, pvChargeEfficiency=0.96):
         self.batterySize = batterySize
         self.batteryStatus = batterySize
         self.chargeAmount = 0
@@ -29,6 +28,13 @@ class VirtualBattery:
         self.extraRequired = 0
         self.daysRunOut = 0
 
+        self.exportWindowStart = exportWindowStart
+        self.exportWindowStop = exportWindowStop
+        self.exportStart = datetime.strptime(exportWindowStart, "%H:%M")
+        self.exportStop = datetime.strptime(exportWindowStop, "%H:%M")
+        self.dischargeEfficiency = dischargeEfficiency
+        self.pvChargeEfficiency = pvChargeEfficiency
+
     def recharge(self):
         self.chargeAmount += self.batterySize - self.batteryStatus
         self.batteryStatus = self.batterySize
@@ -36,30 +42,31 @@ class VirtualBattery:
     def discharge(self, time: datetime):
         runDownAmount = 1000
         if self.export == 1:
-            if time > exportStart and time < exportStop:
-                if self.batteryStatus > (runDownAmount):
-                    fiveminexportamount = min(217, ((self.batterySize - runDownAmount))/(6*60/5))
+            if time > self.exportStart and time < self.exportStop:
+                if self.batteryStatus > runDownAmount:
+                    max5minWh = 200 / self.dischargeEfficiency
+                    fiveminexportamount = min(max5minWh, (self.batterySize - runDownAmount) / (6*60/5))
                     self.batteryStatus -= fiveminexportamount
-                    self.exported += (fiveminexportamount * 0.92)
+                    self.exported += fiveminexportamount * self.dischargeEfficiency
 
     def setRanOut(self):
         self.daysRunOut += 1
 
     def utilise(self, value, time: datetime):
-        #Discharge Efficiency = 92%
         self.discharge(time)
 
-        maxvalue = min(217, value)  # 217 = max 200w per 5 minute (2400 per hour) / 0.92 efficiency
+        max5minWh = 200 / self.dischargeEfficiency
+        maxvalue = min(max5minWh, value)
 
-        if maxvalue > (self.batteryStatus / 0.92):
-            self.drawn += (self.batteryStatus * 0.92)
-            temp = (maxvalue - self.batteryStatus) / 0.92
+        if maxvalue > (self.batteryStatus / self.dischargeEfficiency):
+            self.drawn += self.batteryStatus * self.dischargeEfficiency
+            temp = (maxvalue - self.batteryStatus) / self.dischargeEfficiency
             self.batteryStatus = 0
             self.extraRequired += temp
             return temp
         else:
             self.batteryStatus -= value
-            self.drawn += value * .92
+            self.drawn += value * self.dischargeEfficiency
             return 0
 
     def PVCharge(self, value, time: datetime):
@@ -72,7 +79,7 @@ class VirtualBattery:
                 self.shouldPVCharge = 0
 
         if self.shouldPVCharge == 1:
-            postEfficiencyValue = value * 0.96  # PV charging efficiency = 96%
+            postEfficiencyValue = value * self.pvChargeEfficiency
 
             if self.batteryStatus + postEfficiencyValue <= self.batterySize:
                 self.batteryStatus += postEfficiencyValue

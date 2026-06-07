@@ -6,5 +6,13 @@
     "stopCharge": 5000,
     "energyPrices": "_EnergyPrices.json",
     "startDate": "",
-    "stopDate": ""
+    "stopDate": "",
+    "scanFromYear": 2025,
+    "originalPrice": 6206.47,
+    "exportWindowStart": "17:00",
+    "exportWindowStop": "19:00",
+    "virtualBattery": {
+        "dischargeEfficiency": 0.92,
+        "pvChargeEfficiency": 0.96
+    }
 }

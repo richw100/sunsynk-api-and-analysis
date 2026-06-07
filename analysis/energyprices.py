@@ -7,15 +7,29 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 
 
 class EnergyPrices:
-    def __init__(self, prices, battery: VirtualBattery):
+    def __init__(self, prices, battery: VirtualBattery, originalPrice: float = None):
         self.prices = prices
         self.aggregator = EnergySummaryAggregator()
         self.priceData = PriceData()
+        self.originalPrice = originalPrice if originalPrice is not None else self.priceData.originalPrice
         self.origbattery = battery
-        self.battery = VirtualBattery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
-        self.aggregator.add_summary(EnergySummary(self.priceData, self.battery, 0, self.priceData.originalPrice))
+        self.battery = self._make_battery(self.priceData)
+        self.aggregator.add_summary(EnergySummary(self.priceData, self.battery, 0, self.originalPrice))
         self.grandTotals = self.aggregator.get_grand_totals()
         self.changed = 1
+
+    def _make_battery(self, priceData: PriceData) -> VirtualBattery:
+        return VirtualBattery(
+            priceData,
+            self.origbattery.batterySize,
+            self.origbattery.PVEnabled,
+            self.origbattery.startCharging,
+            self.origbattery.stopCharging,
+            exportWindowStart=self.origbattery.exportWindowStart,
+            exportWindowStop=self.origbattery.exportWindowStop,
+            dischargeEfficiency=self.origbattery.dischargeEfficiency,
+            pvChargeEfficiency=self.origbattery.pvChargeEfficiency,
+        )
 
     def checkDate(self, dateIn: str):
         if re.match("[0-9]{4}-[0-9]{2}-01$", dateIn):
@@ -41,7 +55,7 @@ class EnergyPrices:
                         self.priceData.InterestRate = float(item['InterestRate'])
                     self.priceData.currentStart = newStart
                     self.priceData.currentStop = newStop
-                    self.battery = VirtualBattery(self.priceData, self.origbattery.batterySize, self.origbattery.PVEnabled, self.origbattery.startCharging, self.origbattery.stopCharging)
+                    self.battery = self._make_battery(self.priceData)
 
                     lastSummary = self.aggregator.get_last_summary()
                     remainder = lastSummary.getRemainder()
@@ -90,21 +104,21 @@ class EnergyPrices:
         CompareSavings = round(totals["CompareCost"] - totals["TotalCost"],2)
         print(f"Savings compared to Compare rate: £{CompareSavings}")
         TotalSavingsfromSolarWithSEG = round(CompareSavings + totals["totalExportAmountCalc"],2)
-        TotalSavingsfromSolarWithSEGPercent = round(TotalSavingsfromSolarWithSEG*100/self.priceData.originalPrice,2)
+        TotalSavingsfromSolarWithSEGPercent = round(TotalSavingsfromSolarWithSEG*100/self.originalPrice,2)
 
         print(f"Savings compared to Compare rate Solar: £{CompareSavings}. With SEG: £{TotalSavingsfromSolarWithSEG} ({TotalSavingsfromSolarWithSEGPercent}%)")
 
         CompareSavingsNoSolar = round(totals["CompareCostWithoutSolar"] - totals["TotalCost"],2)
         TotalSavingsNoSolarWithSEG = round(CompareSavingsNoSolar + totals["totalExportAmountCalc"],2)
-        TotalSavingsNoSolarWithSEGPercent = round(TotalSavingsNoSolarWithSEG*100/self.priceData.originalPrice,2)
+        TotalSavingsNoSolarWithSEGPercent = round(TotalSavingsNoSolarWithSEG*100/self.originalPrice,2)
         print(f"Savings compared to Compare rate without Solar: £{CompareSavingsNoSolar}. With SEG: £{TotalSavingsNoSolarWithSEG} ({TotalSavingsNoSolarWithSEGPercent}%)")
 
     def print_return_on_investment(self):
         totals = self.get_grand_totals()
         print(f"\r\nRETURN ON INVESTMENT")
 
-        calcPercentageReturn = round(totals["totalSavingsCalc"]*100/self.priceData.originalPrice,2)
-        suppliedPercentageReturn = round(totals["totalSavingsSupplied"]*100/self.priceData.originalPrice,2)
+        calcPercentageReturn = round(totals["totalSavingsCalc"]*100/self.originalPrice,2)
+        suppliedPercentageReturn = round(totals["totalSavingsSupplied"]*100/self.originalPrice,2)
 
         print(f"Calculated Return: £{totals["totalSavingsCalc"]} ({calcPercentageReturn}%). Supplied Return: £{totals["totalSavingsSupplied"]} ({suppliedPercentageReturn}%)")
 

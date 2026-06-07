@@ -44,6 +44,18 @@ def _parse_cli_args(argv):
             overrides['startDate'] = value
         elif key_lower == 'stopdate':
             overrides['stopDate'] = value
+        elif key_lower == 'scanfromyear':
+            overrides['scanFromYear'] = int(value)
+        elif key_lower == 'originalprice':
+            overrides['originalPrice'] = float(value)
+        elif key_lower == 'exportwindowstart':
+            overrides['exportWindowStart'] = value
+        elif key_lower == 'exportwindowstop':
+            overrides['exportWindowStop'] = value
+        elif key_lower == 'dischargeefficiency':
+            overrides.setdefault('virtualBattery', {})['dischargeEfficiency'] = float(value)
+        elif key_lower == 'pvchargeefficiency':
+            overrides.setdefault('virtualBattery', {})['pvChargeEfficiency'] = float(value)
     return config_path, overrides
 
 
@@ -59,7 +71,11 @@ def _load_settings(argv):
         settings = {}
         print(f"Config: {config_path} not found, using defaults")
 
+    # Merge virtualBattery subsection before the top-level update to avoid
+    # a shallow-copy replacing the whole sub-dict with a partial override.
+    vb_override = overrides.pop('virtualBattery', {})
     settings.update(overrides)
+    settings.setdefault('virtualBattery', {}).update(vb_override)
 
     defaults = {
         'showDays': 'ON',
@@ -69,10 +85,21 @@ def _load_settings(argv):
         'stopCharge': 2000,
         'energyPrices': '_EnergyPrices.json',
         'startDate': '',
-        'stopDate': ''
+        'stopDate': '',
+        'scanFromYear': 2025,
+        'originalPrice': 6206.47,
+        'exportWindowStart': '17:00',
+        'exportWindowStop': '19:00',
+        'virtualBattery': {
+            'dischargeEfficiency': 0.92,
+            'pvChargeEfficiency': 0.96,
+        },
     }
     for key, value in defaults.items():
         settings.setdefault(key, value)
+    # Fill any missing virtualBattery sub-keys
+    for key, value in defaults['virtualBattery'].items():
+        settings['virtualBattery'].setdefault(key, value)
 
     return settings
 
@@ -91,11 +118,19 @@ async def main():
     energyPricesFile = settings['energyPrices']
     startDate = str(settings['startDate'])
     stopDate = str(settings['stopDate'])
+    scanFromYear = int(settings['scanFromYear'])
+    originalPrice = float(settings['originalPrice'])
+    exportWindowStart = settings['exportWindowStart']
+    exportWindowStop = settings['exportWindowStop']
+    vb = settings['virtualBattery']
+    dischargeEfficiency = float(vb['dischargeEfficiency'])
+    pvChargeEfficiency = float(vb['pvChargeEfficiency'])
     processDate = 0 if startDate else 1
 
     print(f"Username: {sunsynk_username}")
     print(f"showDays:{settings['showDays']}  batterySize:{batterySize}  usePV:{settings['usePV']}  startCharge:{startCharge}  stopCharge:{stopCharge}")
-    print(f"energyPrices:{energyPricesFile}  startDate:{startDate or '(all)'}  stopDate:{stopDate or '(all)'}")
+    print(f"energyPrices:{energyPricesFile}  startDate:{startDate or '(all)'}  stopDate:{stopDate or '(all)'}  scanFromYear:{scanFromYear}")
+    print(f"originalPrice:£{originalPrice}  exportWindow:{exportWindowStart}-{exportWindowStop}  dischargeEff:{dischargeEfficiency}  pvChargeEff:{pvChargeEfficiency}")
 
     async with SunsynkEnergyClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net") as client:
         inverters = await client.get_inverters()
@@ -108,7 +143,13 @@ async def main():
             pricesFilename = "inverterData/" + energyPricesFile
 
             tmpPrice = PriceData()
-            battery = VirtualBattery(tmpPrice, batterySize, usePV, startCharge, stopCharge)
+            battery = VirtualBattery(
+                tmpPrice, batterySize, usePV, startCharge, stopCharge,
+                exportWindowStart=exportWindowStart,
+                exportWindowStop=exportWindowStop,
+                dischargeEfficiency=dischargeEfficiency,
+                pvChargeEfficiency=pvChargeEfficiency,
+            )
 
             energyPricesData = None
 
@@ -120,11 +161,11 @@ async def main():
                 print(e)
                 exit(-1)
 
-            prices = EnergyPrices(energyPricesData, battery)
+            prices = EnergyPrices(energyPricesData, battery, originalPrice=originalPrice)
 
             days = 0
             hasyear = 1
-            yearcount = 2025
+            yearcount = scanFromYear
             while yearcount < 2040:
                 if hasyear == 1:
                     hasyear = 0
