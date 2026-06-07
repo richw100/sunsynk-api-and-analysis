@@ -1,5 +1,3 @@
-import json
-
 from sunsynk.resource import Resource
 
 
@@ -7,7 +5,7 @@ class EnergyMonth(Resource):
     def __init__(self, data):
         self.Load = None
         self.data = data
-        self.energy = json.loads(json.dumps(self.data['infos']))
+        self.energy = self.data['infos']
         for item in self.energy:
             if item['label'] == "Load" or item['label'] == "Load Power Consumption":
                 self.Load = item

@@ -16,7 +16,7 @@ class EnergyPrices:
         self.battery = self._make_battery(self.priceData)
         self.aggregator.add_summary(EnergySummary(self.priceData, self.battery, 0, self.originalPrice))
         self.grandTotals = self.aggregator.get_grand_totals()
-        self.changed = 1
+        self.changed = True
 
     def _make_battery(self, priceData: PriceData) -> VirtualBattery:
         return VirtualBattery(
@@ -64,12 +64,12 @@ class EnergyPrices:
                     break
 
     def addData(self, energyday):
-        self.changed = 1
+        self.changed = True
         self.aggregator.update_last_summary(energyday)
 
     def get_grand_totals(self):
-        if self.changed == 1:
-            self.changed = 0
+        if self.changed:
+            self.changed = False
             self.grandTotals = self.aggregator.get_grand_totals()
         return self.grandTotals
 

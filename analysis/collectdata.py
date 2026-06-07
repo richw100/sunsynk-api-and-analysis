@@ -15,6 +15,7 @@ from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices
 
 from datetime import datetime
+from tqdm import tqdm
 
 
 def _parse_cli_args(argv):
@@ -157,7 +158,7 @@ async def main():
     dischargeEfficiency = float(vb['dischargeEfficiency'])
     pvChargeEfficiency = float(vb['pvChargeEfficiency'])
     maxOutputW = float(vb['maxOutputW'])
-    processDate = 0 if startDate else 1
+    processDate = not startDate
 
     print(f"Username: {sunsynk_username}")
     print(f"showDays:{settings['showDays']}  energyPrices:{energyPricesFile}  startDate:{startDate or '(all)'}  stopDate:{stopDate or '(all)'}  scanFromYear:{scanFromYear}")
@@ -198,40 +199,42 @@ async def main():
             prices = EnergyPrices(energyPricesData, battery, originalPrice=originalPrice)
 
             days = 0
-            hasyear = 1
+            current_month = datetime.today().strftime('%Y-%m')
+            total_months = (int(current_month[:4]) - scanFromYear) * 12 + int(current_month[5:7])
+            hasyear = True
             yearcount = scanFromYear
-            while yearcount < 2040:
-                if hasyear == 1:
-                    hasyear = 0
+            with tqdm(total=total_months, unit='month', disable=showDays, dynamic_ncols=True) as pbar:
+                while hasyear and yearcount < 2040:
+                    hasyear = False
                     count = 1
                     while count < 13:
-
-                        join = "-"
-                        if count < 10:
-                            join = "-0"
-                        monthtocheck = str(yearcount) + join + str(count)
+                        monthtocheck = f'{yearcount}-{count:02d}'
+                        if monthtocheck > current_month:
+                            break
+                        pbar.set_description(monthtocheck)
                         energymonth = await client.get_energy_month(inverter.plant.id, monthtocheck)
+                        pbar.update(1)
 
                         items = energymonth.get_Load()
 
-                        if items != None:
+                        if items is not None:
 
                             for day in items['records']:
-                                hasyear = 1
+                                hasyear = True
                                 prices.checkDate(day['time'])
 
                                 checkDate = datetime.strptime(day['time'], "%Y-%m-%d")
                                 if startDate:
                                     startDateTime = datetime.strptime(startDate, "%Y-%m-%d")
                                     if checkDate > startDateTime:
-                                        processDate = 1
+                                        processDate = True
 
                                 if stopDate:
                                     stopDateTime = datetime.strptime(stopDate, "%Y-%m-%d")
                                     if checkDate > stopDateTime:
-                                        processDate = 0
+                                        processDate = False
 
-                                if processDate == 1:
+                                if processDate:
                                     days += 1
 
                                     if showDays:
@@ -244,7 +247,7 @@ async def main():
                                         energyday.print()
 
                         count += 1
-                yearcount += 1
+                    yearcount += 1
 
             prices.get_grand_totals()
 

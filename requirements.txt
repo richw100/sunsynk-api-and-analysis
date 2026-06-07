@@ -1,1 +1,2 @@
 sunsynk-api-client==1.0.9
+tqdm

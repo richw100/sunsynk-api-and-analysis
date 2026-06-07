@@ -11,7 +11,10 @@ from tests.mock_api_server import MockApiServer
 
 
 @pytest.mark.asyncio
-async def test_get_energy_month(aiohttp_client):
+async def test_get_energy_month(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
     mock_api_server = MockApiServer(aiohttp_client)
     client = await mock_api_server.energy_client()
 
@@ -23,6 +26,24 @@ async def test_get_energy_month(aiohttp_client):
     assert float(month.get_PV()['records'][0]['value']) == 8.3
     assert float(month.get_Export()['records'][0]['value']) == 2.1
     assert float(month.get_Import()['records'][0]['value']) == 1.4
+
+
+@pytest.mark.asyncio
+async def test_get_energy_month_uses_cache(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
+    mock_api_server = MockApiServer(aiohttp_client)
+    client = await mock_api_server.energy_client()
+
+    # First call fetches from the mock server and writes a cache file
+    await client.get_energy_month(12345, '2025-06-01')
+    assert (tmp_path / 'inverterData' / 'month-2025-06.json').exists()
+
+    # Second call should read from the cache file, not the server
+    month2 = await client.get_energy_month(12345, '2025-06-01')
+    assert isinstance(month2, EnergyMonth)
+    assert float(month2.get_Load()['records'][0]['value']) == 5.2
 
 
 @pytest.mark.asyncio

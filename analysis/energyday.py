@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 
 from sunsynk.resource import Resource
@@ -11,7 +10,7 @@ class IntervalSummary(Resource):
     """Accumulates peak/offpeak Wh totals from 5-minute interval records for one label (PV, Grid, Load)."""
 
     def __init__(self, data, month: EnergyMonth, battery: VirtualBattery,
-                 offpeakstart="00:00", offpeakstop="00:07", date="", isLoad=0):
+                 offpeakstart="00:00", offpeakstop="00:07", date="", isLoad: bool = False):
         self.label = data['label']
         self.records = data['records']
         self.peak = 0
@@ -19,28 +18,27 @@ class IntervalSummary(Resource):
         self.offpeak = 0
         self.offpeakexport = 0
         self.offpeakpercentage = 0
-        count = 0
-        isOffPeak = 0
+        is_off_peak = False
+        recharged = False
+        battery_ran_out = False
 
         start = datetime.strptime(offpeakstart, "%H:%M")
         stop = datetime.strptime(offpeakstop, "%H:%M")
-
-        hasBatteryRunOut = 0
 
         for record in self.records:
             time = datetime.strptime(record['time'], "%H:%M")
             value = float(record['value']) / 12
 
             if time >= start:
-                isOffPeak = 1
-            if isOffPeak == 1:
+                is_off_peak = True
+            if is_off_peak:
                 if time >= stop:
-                    isOffPeak = 0
+                    is_off_peak = False
 
-            if isOffPeak == 1:
-                if count == 0:
-                    count = 1
-                    if isLoad == 1:
+            if is_off_peak:
+                if not recharged:
+                    recharged = True
+                    if isLoad:
                         battery.recharge()
 
                 if value > 0:
@@ -53,19 +51,19 @@ class IntervalSummary(Resource):
             else:
                 if value > 0:
                     self.peak = self.peak + value
-                    if isLoad == 1:
+                    if isLoad:
                         temp = battery.utilise(value, time)
                         if temp > 0:
-                            hasBatteryRunOut = 1
+                            battery_ran_out = True
                 else:
                     extra_load = min(value * -1, 2.3)
                     export = (value * -1) - extra_load
                     self.peakexport = self.peakexport + export
                     self.peak = self.peak - extra_load
-                    if isLoad == 1:
+                    if isLoad:
                         battery.PVCharge(export, time)
 
-        if hasBatteryRunOut == 1:
+        if battery_ran_out:
             battery.setRanOut()
 
         if self.offpeak + self.peak > 0:
@@ -76,35 +74,19 @@ class EnergyDay(Resource):
     def __init__(self, data, date: str, month: EnergyMonth, battery: VirtualBattery,
                  offpeakstart: str, offpeakstop: str):
         self.data = data
-        energy = json.loads(json.dumps(self.data['infos']))
+        energy = self.data['infos']
         for item in energy:
             if item['label'] == "PV":
-                self.PV = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date, 0)
+                self.PV = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date)
             elif item['label'] == "Grid":
-                self.Grid = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date, 1)
+                self.Grid = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date, isLoad=True)
             elif item['label'] == "Load":
-                self.Load = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date, 0)
+                self.Load = IntervalSummary(item, month, battery, offpeakstart, offpeakstop, date)
 
-        self.suppliedLoad = 0
-        self.suppliedImport = 0
-        self.suppliedExport = 0
-        self.suppliedPV = 0
-
-        for day in month.get_Load()['records']:
-            if day['time'] == date:
-                self.suppliedLoad = float(day['value'])
-
-        for day in month.get_Import()['records']:
-            if day['time'] == date:
-                self.suppliedImport = float(day['value'])
-
-        for day in month.get_PV()['records']:
-            if day['time'] == date:
-                self.suppliedPV = float(day['value'])
-
-        for day in month.get_Export()['records']:
-            if day['time'] == date:
-                self.suppliedExport = float(day['value'])
+        self.suppliedLoad = next((float(r['value']) for r in month.get_Load()['records'] if r['time'] == date), 0.0)
+        self.suppliedImport = next((float(r['value']) for r in month.get_Import()['records'] if r['time'] == date), 0.0)
+        self.suppliedPV = next((float(r['value']) for r in month.get_PV()['records'] if r['time'] == date), 0.0)
+        self.suppliedExport = next((float(r['value']) for r in month.get_Export()['records'] if r['time'] == date), 0.0)
 
     def getCalcExport(self, qtype: QueryType = QueryType.BOTH):
         if qtype == QueryType.BOTH:

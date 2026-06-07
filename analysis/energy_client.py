@@ -19,10 +19,10 @@ class SunsynkEnergyClient(SunsynkClient):
         self._today = datetime.today().strftime('%Y-%m-%d')
 
     async def get_energy_month(self, plant_id: str, date: str) -> EnergyMonth:
-        resp = await self._SunsynkClient__get(
-            f'api/v1/plant/energy/{plant_id}/month?lan=en&date={date}&id={plant_id}'
+        body = await self._get_cached(
+            f'api/v1/plant/energy/{plant_id}/month?lan=en&date={date}&id={plant_id}',
+            'month', date[:7]
         )
-        body = await resp.json()
         return EnergyMonth(body['data'])
 
     async def get_energy_day(self, plant_id: str, date: str, month: EnergyMonth,
@@ -39,7 +39,7 @@ class SunsynkEnergyClient(SunsynkClient):
         except Exception:
             resp = await self._SunsynkClient__get(path)
             body = await resp.json()
-            if date != self._today:
+            if date != self._today[:len(date)]:
                 with open(f'inverterData/{req_type}-{date}.json', 'w') as file:
                     json.dump(body, file, indent=2)
                     print(f'Write to file: {req_type}-{date}.json')

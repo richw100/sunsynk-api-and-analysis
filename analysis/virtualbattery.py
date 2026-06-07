@@ -102,15 +102,3 @@ class VirtualBattery:
         self.exportCost = round((self.exported/1000)*self.priceData.currentExport, 2)
         self.savings = self.nominalCost + self.exportCost - self.costFromGrid - self.lostExportCost
 
-    def print(self, totalCalcImportPeak, days):
-        self.getSavings()
-        if days > 0:
-            print(f"\r\nBATTERY")
-            print(f"Potential battery usage {self.getChargeAmountkWh()}kWh (vs {round(totalCalcImportPeak/1000, 1)}kWh actually imported). (Average: {round(self.getChargeAmountkWh()/days, 2)}kWh/day)")
-            print(f"Total Drawn: {self.totalDrawnkWh()}kWh. Nominal Cost from Grid: £{self.nominalCost}")
-            print(f"Total Cost from Grid: {self.getChargeAmountkWh()}kWh. Cost from Grid: £{self.costFromGrid}")
-            print(f"Total Cost from PV: {self.getPVChargekWh()}kWh. Not exported: £{self.lostExportCost}")
-            print(f"Potential Savings: £{round(self.nominalCost + self.exportCost - self.costFromGrid - self.lostExportCost,2)}")
-            print(f"Re-exported: £{self.exportCost} ({self.exported/1000}kWh")
-            print(f"Days Ran Out of Battery: {self.daysRunOut} ({self.extraRequired/1000}kWh)")
-            print(f"Potential savings - per day: £{round(self.savings/days,2)}, Average per year: £{round(365*self.savings/days,2)}")
