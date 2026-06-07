@@ -250,11 +250,11 @@ async def main():
 
             prices.print_energy_summary()
             prices.print_averages()
-            prices.print_totals()
-            prices.print_return_on_investment()
-            prices.print_savings()
-            prices.print_battery()
             prices.print_costs()
+            prices.print_savings()
+            prices.print_return_on_investment()
+            prices.print_battery()
+            prices.print_totals()
 
 
 asyncio.run(main())

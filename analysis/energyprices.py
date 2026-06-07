@@ -137,8 +137,6 @@ class EnergyPrices:
         print(f"Compare Rate Cost of Energy: £{t['CompareCost']}")
         print(f"Compare Rate Cost of Energy without Solar: £{t['CompareCostWithoutSolar']}")
         print("")
-        print(f"Savings on bill (excl. export): £{d['bill_savings']}. With SEG: £{d['bill_savings_inc_seg']}")
-        print(f"Savings vs compare provider (excl. export): £{d['solar_vs_compare']}. With SEG: £{d['solar_vs_compare_inc_seg']}")
 
     def print_savings(self):
         d = self._derive()
@@ -184,9 +182,6 @@ class EnergyPrices:
         t = self.get_grand_totals()
         print("")
         print(f"Offpeak Total: {t['totalCalcImportOffPeak']}kWh. Expected Excess: {t['totalOffPeakExcess']}kWh. Savings: £{t['totalOffPeakExcessSavings']}")
-        print("")
-        print(f"Calculated savings. Saved from grid: {t['totalSavedCalc']}kWh = £{t['totalSavedAmountCalc']}. Exported: {t['totalCalcExport']}kWh = £{t['totalExportAmountCalc']}")
-        print(f"Supplied savings.   Saved from grid: {t['totalSavedSupplied']}kWh = £{t['totalSavedAmountSupplied']}. Exported: {t['totalSuppliedExport']}kWh = £{t['totalExportAmountSupplied']}")
 
     def print_battery(self):
         d = self._derive()
