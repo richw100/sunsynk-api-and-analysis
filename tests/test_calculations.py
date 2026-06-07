@@ -459,3 +459,78 @@ def test_energy_prices_get_grand_totals_uses_cache():
     totals1 = ep.get_grand_totals()
     totals2 = ep.get_grand_totals()  # should use cached result (changed=False)
     assert totals1 == totals2
+
+
+# ─── Off-peak baseline ───────────────────────────────────────────────────────
+
+def test_off_peak_average_unchanged_for_7h_window():
+    # 7-hour window: 0.96 * 7/7 = 0.96 (baseline is not scaled)
+    pd = make_price_data(offpeak_start="00:00", offpeak_stop="07:00")
+    EnergySummary(pd, VirtualBattery(pd))
+    assert pd.off_peak_average == pytest.approx(0.96, rel=1e-6)
+
+
+def test_off_peak_average_scales_proportionally_to_window_length():
+    # 3.5-hour window: 0.96 * 3.5/7 = 0.48
+    pd = make_price_data(offpeak_start="00:00", offpeak_stop="03:30")
+    EnergySummary(pd, VirtualBattery(pd))
+    assert pd.off_peak_average == pytest.approx(0.96 * 3.5 / 7, rel=1e-6)
+
+
+def test_off_peak_average_uses_custom_baseline():
+    # Custom baseline of 1.4 kWh/day for a 7-hour window → average = 1.4
+    pd = make_price_data(offpeak_start="00:00", offpeak_stop="07:00")
+    pd.off_peak_baseline_kwh = 1.4
+    EnergySummary(pd, VirtualBattery(pd))
+    assert pd.off_peak_average == pytest.approx(1.4, rel=1e-6)
+
+
+def test_off_peak_excess_and_savings_computed_correctly():
+    # 7-hour window → off_peak_average = 0.96 kWh/day
+    # Off-peak import = 2000 Wh = 2.0 kWh on 1 day → excess = 2.0 - 0.96 = 1.04 kWh
+    # Saving = 1.04 * (peak 0.30 - offpeak 0.10) = £0.208
+    pd = make_price_data(peak=0.30, offpeak=0.10, offpeak_start="00:00", offpeak_stop="07:00")
+    battery = VirtualBattery(pd)
+    summary = EnergySummary(pd, battery)
+    summary.add_data(make_day(calc_import_offpeak=2000))
+    summary.recalculate()
+    assert summary.off_peak_excess == pytest.approx(2.0 - 0.96, rel=1e-6)
+    assert summary.off_peak_excess_savings == pytest.approx((2.0 - 0.96) * (0.30 - 0.10), rel=1e-6)
+
+
+def test_off_peak_shift_enabled_adds_excess_savings_to_calc_savings():
+    # Off-peak import well above baseline → off_peak_excess_savings > 0
+    # get_derived() should add it to calc_savings
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery, off_peak_shift_enabled=True)
+    ep.check_date('2024-06-15')
+    ep.add_data(make_day(calc_import_offpeak=5000))  # 5 kWh >> 0.96 kWh baseline
+    d = ep.get_derived()
+    t = ep.get_grand_totals()
+    assert t['total_off_peak_excess_savings'] > 0
+    assert d['calc_savings'] == pytest.approx(
+        round(t['total_savings_calc'] + t['total_off_peak_excess_savings'], 2)
+    )
+
+
+def test_off_peak_shift_disabled_excludes_excess_savings_from_calc_savings():
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery, off_peak_shift_enabled=False)
+    ep.check_date('2024-06-15')
+    ep.add_data(make_day(calc_import_offpeak=5000))  # 5 kWh >> 0.96 kWh baseline
+    d = ep.get_derived()
+    t = ep.get_grand_totals()
+    # Excess savings are still calculated in grand_totals (the data is there)
+    assert t['total_off_peak_excess_savings'] > 0
+    # But get_derived() excludes them when shift is disabled
+    assert d['calc_savings'] == pytest.approx(round(t['total_savings_calc'], 2))
+
+
+def test_off_peak_baseline_preserved_through_tariff_switch():
+    # check_date switches tariff period; the custom baseline must survive the switch
+    battery = VirtualBattery(PriceData())
+    ep = EnergyPrices(SAMPLE_PRICES, battery, off_peak_baseline_kwh=1.5)
+    ep.check_date('2024-06-15')  # triggers switch to the 2024 tariff period
+    assert ep.price_data.off_peak_baseline_kwh == pytest.approx(1.5)
+    # SAMPLE_PRICES 2024 period: 00:30-07:30 = 7h → off_peak_average should equal baseline
+    assert ep.price_data.off_peak_average == pytest.approx(1.5, rel=1e-6)
