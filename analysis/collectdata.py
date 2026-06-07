@@ -53,12 +53,16 @@ def _parse_cli_args(argv):
             overrides['exportWindowStart'] = value
         elif key_lower == 'exportwindowstop':
             overrides['exportWindowStop'] = value
+        elif key_lower == 'useexport':
+            overrides['useExport'] = value
         elif key_lower == 'dischargeefficiency':
             overrides.setdefault('virtualBattery', {})['dischargeEfficiency'] = float(value)
         elif key_lower == 'pvchargeefficiency':
             overrides.setdefault('virtualBattery', {})['pvChargeEfficiency'] = float(value)
         elif key_lower == 'maxoutputw':
             overrides.setdefault('virtualBattery', {})['maxOutputW'] = float(value)
+        elif key_lower == 'chargeefficiency':
+            overrides.setdefault('virtualBattery', {})['chargeEfficiency'] = float(value)
     return config_path, overrides
 
 
@@ -93,10 +97,12 @@ def _load_settings(argv):
         'originalPrice': 6206.47,
         'exportWindowStart': '17:00',
         'exportWindowStop': '19:00',
+        'useExport': 'OFF',
         'virtualBattery': {
             'dischargeEfficiency': 0.92,
             'pvChargeEfficiency': 0.96,
             'maxOutputW': 2400,
+            'chargeEfficiency': 1.0,
         },
     }
     for key, value in defaults.items():
@@ -121,6 +127,7 @@ def _print_usage():
     print("  originalPrice:N         Installation cost for ROI calculation")
     print("  exportWindowStart:HH:MM Battery-to-grid export window start")
     print("  exportWindowStop:HH:MM  Battery-to-grid export window stop")
+    print("  useExport:ON|OFF        Sell battery back to grid during export window")
     print("")
     print("Virtual battery options:")
     print("  batterySize:N           Battery capacity in Wh")
@@ -128,6 +135,7 @@ def _print_usage():
     print("  startCharge:N           PV charging starts below this level (Wh)")
     print("  stopCharge:N            PV charging stops at this level (Wh)")
     print("  dischargeEfficiency:N   Discharge efficiency (e.g. 0.92)")
+    print("  chargeEfficiency:N      Grid charging efficiency (e.g. 0.95; default 1.0)")
     print("  pvChargeEfficiency:N    PV charge efficiency (e.g. 0.96)")
     print("  maxOutputW:N            Maximum battery output in watts (e.g. 2400)")
 
@@ -145,6 +153,8 @@ def _make_battery(settings, price_data):
         discharge_efficiency=float(vb['dischargeEfficiency']),
         pv_charge_efficiency=float(vb['pvChargeEfficiency']),
         max_output_w=float(vb['maxOutputW']),
+        use_export=bool(re.match('^on', str(settings['useExport']), re.IGNORECASE)),
+        charge_efficiency=float(vb['chargeEfficiency']),
     )
 
 
@@ -208,7 +218,11 @@ async def main():
         f"stopDate:{stop_date or '(all)'}  "
         f"scanFromYear:{scan_from_year}"
     )
-    print(f"originalPrice:£{original_price}  exportWindow:{settings['exportWindowStart']}-{settings['exportWindowStop']}")
+    print(
+        f"originalPrice:£{original_price}  "
+        f"exportWindow:{settings['exportWindowStart']}-{settings['exportWindowStop']}  "
+        f"useExport:{settings['useExport']}"
+    )
     print(
         f"Virtual battery: batterySize:{settings['batterySize']}  "
         f"usePV:{settings['usePV']}  "
@@ -217,6 +231,7 @@ async def main():
     )
     print(
         f"                 dischargeEfficiency:{vb['dischargeEfficiency']}  "
+        f"chargeEfficiency:{vb['chargeEfficiency']}  "
         f"pvChargeEfficiency:{vb['pvChargeEfficiency']}  "
         f"maxOutputW:{vb['maxOutputW']}"
     )

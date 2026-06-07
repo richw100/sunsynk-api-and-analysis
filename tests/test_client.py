@@ -128,7 +128,7 @@ async def test_get_energy_day_with_peak_export(aiohttp_client, tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_get_energy_day_battery_runs_out(aiohttp_client, tmp_path, monkeypatch):
     # With a 30 Wh battery and a 765 W peak Grid record at 06:00 (value=63.75 Wh),
-    # the battery is exhausted: 63.75 > 30/0.92=32.6 → setRanOut() is called.
+    # deliverable = 30 * 0.92 = 27.6 Wh < 63.75 Wh demand → battery exhausted.
     monkeypatch.chdir(tmp_path)
     (tmp_path / 'inverterData').mkdir()
 

@@ -79,9 +79,11 @@ def test_virtual_battery_utilise_draws_with_92_percent_efficiency():
     t = datetime.strptime("12:00", "%H:%M")
     result = battery.utilise(100, t)
     assert result == 0
-    assert battery.battery_status == 4900
-    assert battery.drawn == pytest.approx(92.0)
-    assert battery.total_drawn_kwh() == 0.09
+    # Battery drains by demand / efficiency, not just demand
+    assert battery.battery_status == pytest.approx(5000 - 100 / 0.92, rel=1e-6)
+    # drawn = energy delivered to load (what replaces grid purchase)
+    assert battery.drawn == pytest.approx(100.0)
+    assert battery.total_drawn_kwh() == 0.1
 
 
 def test_virtual_battery_utilise_returns_shortfall_when_exhausted():
@@ -90,7 +92,8 @@ def test_virtual_battery_utilise_returns_shortfall_when_exhausted():
     t = datetime.strptime("12:00", "%H:%M")
     result = battery.utilise(200, t)
     assert battery.battery_status == 0
-    assert result > 0
+    # deliverable = 100 * 0.92 = 92 Wh; shortfall = 200 - 92 = 108 Wh
+    assert result == pytest.approx(200 - 100 * 0.92)
     assert battery.drawn == pytest.approx(100 * 0.92)
     assert battery.extra_required == pytest.approx(result)
 
@@ -135,10 +138,10 @@ def test_virtual_battery_pv_charge_stops_at_stop_threshold():
 def test_virtual_battery_get_savings_computes_correctly():
     pd = make_price_data(peak=0.30, offpeak=0.10, export=0.15)
     battery = VirtualBattery(pd, battery_size=10000)
-    battery.charge_amount = 10000  # 10 kWh charged off-peak
-    battery.drawn = 5000           # 5 kWh drawn at peak
-    battery.pv_input = 2000        # 2 kWh from PV (foregone export)
-    battery.exported = 1000        # 1 kWh re-exported
+    battery.charge_amount = 10000  # 10 kWh stored from grid (charge_efficiency=1.0 default)
+    battery.drawn = 5000           # 5 kWh delivered to load at peak
+    battery.pv_diverted = 2000     # 2 kWh raw PV surplus redirected to battery (foregone export)
+    battery.exported = 1000        # 1 kWh re-exported from battery
 
     battery.get_savings()
 
@@ -294,8 +297,7 @@ def test_aggregator_raises_when_empty():
 # ─── VirtualBattery.discharge() ──────────────────────────────────────────────
 
 def test_virtual_battery_discharge_exports_during_window():
-    battery = VirtualBattery(PriceData(), battery_size=5000)
-    battery.export = 1
+    battery = VirtualBattery(PriceData(), battery_size=5000, use_export=True)
     battery.battery_status = 3000
     t = datetime.strptime("18:00", "%H:%M")  # within 17:00-19:00 export window
     battery.discharge(t)
@@ -304,8 +306,7 @@ def test_virtual_battery_discharge_exports_during_window():
 
 
 def test_virtual_battery_discharge_no_effect_outside_window():
-    battery = VirtualBattery(PriceData(), battery_size=5000)
-    battery.export = 1
+    battery = VirtualBattery(PriceData(), battery_size=5000, use_export=True)
     battery.battery_status = 3000
     t = datetime.strptime("12:00", "%H:%M")  # outside export window
     battery.discharge(t)
@@ -332,6 +333,35 @@ def test_virtual_battery_get_pv_charge_kwh():
     t = datetime.strptime("12:00", "%H:%M")
     battery.pv_charge(100, t)
     assert battery.get_pv_charge_kwh() == pytest.approx(round(100 * 0.96 / 1000, 2))
+
+
+def test_virtual_battery_pv_diverted_tracks_raw_surplus():
+    battery = VirtualBattery(PriceData(), battery_size=5000, use_pv=1,
+                             start_charging=1000, stop_charging=2000)
+    battery.battery_status = 500
+    t = datetime.strptime("12:00", "%H:%M")
+    battery.pv_charge(100, t)
+    assert battery.pv_input == pytest.approx(100 * 0.96)   # energy stored (post efficiency)
+    assert battery.pv_diverted == pytest.approx(100)        # raw surplus diverted from export
+
+
+def test_virtual_battery_charge_efficiency_increases_grid_cost():
+    pd = make_price_data(peak=0.30, offpeak=0.10, export=0.15)
+    battery = VirtualBattery(pd, battery_size=10000, charge_efficiency=0.95)
+    battery.charge_amount = 10000  # 10 kWh stored; grid supplied 10000/0.95 Wh
+    battery.get_savings()
+    assert battery.cost_from_grid == pytest.approx(round(10000 / 0.95 / 1000 * 0.10, 2))
+
+
+def test_virtual_battery_use_export_enables_grid_discharge():
+    battery = VirtualBattery(PriceData(), battery_size=5000, use_export=True)
+    battery.battery_status = 3000
+    t = datetime.strptime("18:00", "%H:%M")
+    battery.discharge(t)
+    assert battery.battery_status < 3000
+    assert battery.exported > 0
+    # 17:00-19:00 = 2 hours = 24 five-minute intervals
+    assert battery._export_intervals == 24
 
 
 # ─── EnergyPrices ────────────────────────────────────────────────────────────
