@@ -53,9 +53,6 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `stopDate:` | `YYYY-MM-DD` | Stop processing after this date |
 | `scanFromYear:` | `YYYY` | First year to scan for historical data |
 | `originalPrice:` | number | Installation cost (£) used for ROI calculation |
-| `exportWindowStart:` | `HH:MM` | Battery-to-grid export window start |
-| `exportWindowStop:` | `HH:MM` | Battery-to-grid export window stop |
-| `useExportFromVirtualBattery:` | `ON`\|`OFF` | Sell virtual battery charge back to grid during export window |
 | `offPeakShift:` | `ON`\|`OFF` | Include off-peak load-shifting savings in totals and ROI (default: `ON`) |
 | `offPeakBaseline:` | float (kWh) | Expected daily off-peak import for a 7-hour window when no load is shifted (default: `0.96`) |
 
@@ -68,6 +65,9 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `usePV:` | `ON`\|`OFF` | Charge battery from PV surplus |
 | `startCharge:` | integer (Wh) | Begin PV charging when battery falls below this level |
 | `stopCharge:` | integer (Wh) | Stop PV charging when battery reaches this level |
+| `exportWindowStart:` | `HH:MM` | Export window start (sell back to grid during this window) |
+| `exportWindowStop:` | `HH:MM` | Export window stop |
+| `useExport:` | `ON`\|`OFF` | Sell virtual battery charge back to grid during export window |
 | `dischargeEfficiency:` | float (e.g. `0.92`) | Fraction of stored energy delivered to load |
 | `chargeEfficiency:` | float (e.g. `0.95`) | Fraction of grid energy actually stored (default `1.0`) |
 | `pvChargeEfficiency:` | float (e.g. `0.96`) | Fraction of PV surplus actually stored |
