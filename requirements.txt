@@ -1,2 +1,8 @@
 sunsynk-api-client==1.0.9
 tqdm
+
+# test dependencies
+pytest
+pytest-asyncio
+pytest-aiohttp
+pytest-cov
