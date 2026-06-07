@@ -6,7 +6,7 @@ from analysis.pricedata import PriceData
 class VirtualBattery:
     def __init__(self, priceData: PriceData, batterySize=5000, UsePV=0, startCharging=1000, stopCharging=2000,
                  exportWindowStart="17:00", exportWindowStop="19:00",
-                 dischargeEfficiency=0.92, pvChargeEfficiency=0.96):
+                 dischargeEfficiency=0.92, pvChargeEfficiency=0.96, maxOutputW=2400):
         self.batterySize = batterySize
         self.batteryStatus = batterySize
         self.chargeAmount = 0
@@ -34,6 +34,7 @@ class VirtualBattery:
         self.exportStop = datetime.strptime(exportWindowStop, "%H:%M")
         self.dischargeEfficiency = dischargeEfficiency
         self.pvChargeEfficiency = pvChargeEfficiency
+        self.maxOutputW = maxOutputW
 
     def recharge(self):
         self.chargeAmount += self.batterySize - self.batteryStatus
@@ -44,7 +45,7 @@ class VirtualBattery:
         if self.export == 1:
             if time > self.exportStart and time < self.exportStop:
                 if self.batteryStatus > runDownAmount:
-                    max5minWh = 200 / self.dischargeEfficiency
+                    max5minWh = (self.maxOutputW / 12) / self.dischargeEfficiency
                     fiveminexportamount = min(max5minWh, (self.batterySize - runDownAmount) / (6*60/5))
                     self.batteryStatus -= fiveminexportamount
                     self.exported += fiveminexportamount * self.dischargeEfficiency
@@ -55,7 +56,7 @@ class VirtualBattery:
     def utilise(self, value, time: datetime):
         self.discharge(time)
 
-        max5minWh = 200 / self.dischargeEfficiency
+        max5minWh = (self.maxOutputW / 12) / self.dischargeEfficiency
         maxvalue = min(max5minWh, value)
 
         if maxvalue > (self.batteryStatus / self.dischargeEfficiency):

@@ -56,6 +56,8 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['dischargeEfficiency'] = float(value)
         elif key_lower == 'pvchargeefficiency':
             overrides.setdefault('virtualBattery', {})['pvChargeEfficiency'] = float(value)
+        elif key_lower == 'maxoutputw':
+            overrides.setdefault('virtualBattery', {})['maxOutputW'] = float(value)
     return config_path, overrides
 
 
@@ -93,6 +95,7 @@ def _load_settings(argv):
         'virtualBattery': {
             'dischargeEfficiency': 0.92,
             'pvChargeEfficiency': 0.96,
+            'maxOutputW': 2400,
         },
     }
     for key, value in defaults.items():
@@ -104,7 +107,35 @@ def _load_settings(argv):
     return settings
 
 
+def _print_usage():
+    print("Usage: collectdata.py [key:value ...]")
+    print("")
+    print("General options:")
+    print("  config:path.json        Config file to load (default: config.json)")
+    print("  showDays:ON|OFF         Print per-day output")
+    print("  energyPrices:file.json  Energy prices file in inverterData/")
+    print("  startDate:YYYY-MM-DD    Process days after this date")
+    print("  stopDate:YYYY-MM-DD     Stop processing after this date")
+    print("  scanFromYear:YYYY       First year to scan for data")
+    print("  originalPrice:N         Installation cost for ROI calculation")
+    print("  exportWindowStart:HH:MM Battery-to-grid export window start")
+    print("  exportWindowStop:HH:MM  Battery-to-grid export window stop")
+    print("")
+    print("Virtual battery options:")
+    print("  batterySize:N           Battery capacity in Wh")
+    print("  usePV:ON|OFF            Charge battery from PV surplus")
+    print("  startCharge:N           PV charging starts below this level (Wh)")
+    print("  stopCharge:N            PV charging stops at this level (Wh)")
+    print("  dischargeEfficiency:N   Discharge efficiency (e.g. 0.92)")
+    print("  pvChargeEfficiency:N    PV charge efficiency (e.g. 0.96)")
+    print("  maxOutputW:N            Maximum battery output in watts (e.g. 2400)")
+
+
 async def main():
+    if '--help' in sys.argv or '-h' in sys.argv:
+        _print_usage()
+        return
+
     sunsynk_username = os.getenv('SUNSYNK_USERNAME')
     sunsynk_password = os.getenv('SUNSYNK_PASSWORD')
 
@@ -125,12 +156,14 @@ async def main():
     vb = settings['virtualBattery']
     dischargeEfficiency = float(vb['dischargeEfficiency'])
     pvChargeEfficiency = float(vb['pvChargeEfficiency'])
+    maxOutputW = float(vb['maxOutputW'])
     processDate = 0 if startDate else 1
 
     print(f"Username: {sunsynk_username}")
-    print(f"showDays:{settings['showDays']}  batterySize:{batterySize}  usePV:{settings['usePV']}  startCharge:{startCharge}  stopCharge:{stopCharge}")
-    print(f"energyPrices:{energyPricesFile}  startDate:{startDate or '(all)'}  stopDate:{stopDate or '(all)'}  scanFromYear:{scanFromYear}")
-    print(f"originalPrice:£{originalPrice}  exportWindow:{exportWindowStart}-{exportWindowStop}  dischargeEff:{dischargeEfficiency}  pvChargeEff:{pvChargeEfficiency}")
+    print(f"showDays:{settings['showDays']}  energyPrices:{energyPricesFile}  startDate:{startDate or '(all)'}  stopDate:{stopDate or '(all)'}  scanFromYear:{scanFromYear}")
+    print(f"originalPrice:£{originalPrice}  exportWindow:{exportWindowStart}-{exportWindowStop}")
+    print(f"Virtual battery: batterySize:{batterySize}  usePV:{settings['usePV']}  startCharge:{startCharge}  stopCharge:{stopCharge}")
+    print(f"                 dischargeEfficiency:{dischargeEfficiency}  pvChargeEfficiency:{pvChargeEfficiency}  maxOutputW:{maxOutputW}")
 
     async with SunsynkEnergyClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net") as client:
         inverters = await client.get_inverters()
@@ -149,6 +182,7 @@ async def main():
                 exportWindowStop=exportWindowStop,
                 dischargeEfficiency=dischargeEfficiency,
                 pvChargeEfficiency=pvChargeEfficiency,
+                maxOutputW=maxOutputW,
             )
 
             energyPricesData = None

@@ -13,6 +13,7 @@
     "exportWindowStop": "19:00",
     "virtualBattery": {
         "dischargeEfficiency": 0.92,
-        "pvChargeEfficiency": 0.96
+        "pvChargeEfficiency": 0.96,
+        "maxOutputW": 2400
     }
 }

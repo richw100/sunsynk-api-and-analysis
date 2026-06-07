@@ -29,6 +29,7 @@ class EnergyPrices:
             exportWindowStop=self.origbattery.exportWindowStop,
             dischargeEfficiency=self.origbattery.dischargeEfficiency,
             pvChargeEfficiency=self.origbattery.pvChargeEfficiency,
+            maxOutputW=self.origbattery.maxOutputW,
         )
 
     def checkDate(self, dateIn: str):
