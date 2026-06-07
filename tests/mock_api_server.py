@@ -320,39 +320,40 @@ class MockApiServer:
         return web.Response(text=json.dumps(payload), headers=headers)
 
     async def get_energy_month(self, request):
-        # Daily totals (kWh) for the month; records keyed by date string YYYY-MM-DD.
-        # EnergyDay looks up its date in these records to get supplied kWh figures.
+        # Daily totals (kWh) from the real API (labels match real Sunsynk API format).
+        # 2025-06-10: sunny day (based on 2026-05-27 real data)
+        # 2025-06-11: cloudy day with export (based on 2026-05-04 real data)
         payload = {
             "code": 0,
             "msg": "Success",
             "data": {
                 "infos": [
                     {
-                        "label": "Load",
+                        "label": "Load Power Consumption",
                         "records": [
-                            {"time": "2025-06-10", "value": "5.2"},
-                            {"time": "2025-06-11", "value": "4.8"}
+                            {"time": "2025-06-10", "value": "22.9"},
+                            {"time": "2025-06-11", "value": "6.0"}
                         ]
                     },
                     {
-                        "label": "PV",
+                        "label": "PV Generation",
                         "records": [
-                            {"time": "2025-06-10", "value": "8.3"},
-                            {"time": "2025-06-11", "value": "6.1"}
+                            {"time": "2025-06-10", "value": "19.6"},
+                            {"time": "2025-06-11", "value": "4.4"}
                         ]
                     },
                     {
-                        "label": "Export",
+                        "label": "Sold electricity",
                         "records": [
-                            {"time": "2025-06-10", "value": "2.1"},
-                            {"time": "2025-06-11", "value": "1.5"}
+                            {"time": "2025-06-10", "value": "10.1"},
+                            {"time": "2025-06-11", "value": "1.4"}
                         ]
                     },
                     {
-                        "label": "Import",
+                        "label": "Purchased electricity",
                         "records": [
-                            {"time": "2025-06-10", "value": "1.4"},
-                            {"time": "2025-06-11", "value": "1.8"}
+                            {"time": "2025-06-10", "value": "1.9"},
+                            {"time": "2025-06-11", "value": "2.9"}
                         ]
                     }
                 ]
@@ -365,54 +366,77 @@ class MockApiServer:
     async def get_energy_day(self, request):
         date = request.rel_url.query.get('date', '')
         if date == '2025-06-11':
-            infos = self._day_infos_peak_export()
+            infos = self._day_infos_cloudy()
         else:
-            infos = self._day_infos_standard()
+            infos = self._day_infos_sunny()
         payload = {"code": 0, "msg": "Success", "data": {"infos": infos}, "success": True}
         return web.Response(text=json.dumps(payload), headers={'Content-Type': 'application/json'})
 
-    def _day_infos_standard(self):
-        # Records for 2025-06-10 with offpeak=00:00-06:00:
-        #   Grid offpeak = (300 + 240) / 12 = 45 Wh
-        #   Grid peak    = 600 / 12          = 50 Wh   → getCalcImport() = 95 Wh
-        #   PV peak      = 2400 / 12         = 200 Wh  → getCalcPV()     = 200 Wh
+    @staticmethod
+    def _r(time, value):
+        return {"time": time, "value": str(float(value)), "updateTime": None}
+
+    def _day_infos_sunny(self):
+        # Hourly records for 2025-06-10 (sunny day, from 2026-05-27 real data).
+        # offpeak=00:00-06:00 (records at 00:00-05:00 are offpeak; 06:00+ is peak).
+        # Expected results (Wh):
+        #   Grid offpeak = 7344/12 = 612.0,  peak = 749.75 - 9*2.3 ≈ 729.05 → import 1341.1
+        #   Grid peakexport = 721.2
+        #   PV   peak     = 18880/12 = 1573.3
+        #   Load offpeak  = 612.0,  peak = 19025/12 = 1585.4 → load 2197.4
+        r = self._r
         return [
             {"label": "PV",      "unit": "W", "records": [
-                {"time": "00:00", "value": "0.0",    "updateTime": None},
-                {"time": "00:05", "value": "0.0",    "updateTime": None},
-                {"time": "08:00", "value": "2400.0", "updateTime": None}]},
-            {"label": "Battery", "unit": "W", "records": [
-                {"time": "00:00", "value": "0.0", "updateTime": None},
-                {"time": "00:05", "value": "0.0", "updateTime": None},
-                {"time": "08:00", "value": "0.0", "updateTime": None}]},
-            {"label": "SOC",     "unit": "%", "records": [
-                {"time": "00:00", "value": "50.0", "updateTime": None},
-                {"time": "00:05", "value": "50.0", "updateTime": None},
-                {"time": "08:00", "value": "60.0", "updateTime": None}]},
+                r("06:00", 110),  r("07:00", 790),  r("08:00", 1473), r("09:00", 968),
+                r("10:00", 2147), r("11:00", 2512), r("12:00", 2575), r("13:00", 2433),
+                r("14:00", 2119), r("15:00", 1672), r("16:00", 1157), r("17:00", 512),
+                r("18:00", 196),  r("19:00", 148),  r("20:00", 68)]},
+            {"label": "Battery", "unit": "W", "records": [r("12:00", 0)]},
+            {"label": "SOC",     "unit": "%", "records": [r("12:00", 50)]},
             {"label": "Load",    "unit": "W", "records": [
-                {"time": "00:00", "value": "300.0", "updateTime": None},
-                {"time": "00:05", "value": "240.0", "updateTime": None},
-                {"time": "08:00", "value": "600.0", "updateTime": None}]},
+                r("00:00", 787),  r("01:00", 930),  r("02:00", 3148), r("03:00", 876),
+                r("04:00", 805),  r("05:00", 798),  r("06:00", 875),  r("07:00", 781),
+                r("08:00", 786),  r("09:00", 863),  r("10:00", 1066), r("11:00", 902),
+                r("12:00", 945),  r("13:00", 983),  r("14:00", 935),  r("15:00", 863),
+                r("16:00", 877),  r("17:00", 777),  r("18:00", 772),  r("19:00", 1014),
+                r("20:00", 2290), r("21:00", 3536), r("23:00", 760)]},
             {"label": "Grid",    "unit": "W", "records": [
-                {"time": "00:00", "value": "300.0", "updateTime": None},
-                {"time": "00:05", "value": "240.0", "updateTime": None},
-                {"time": "08:00", "value": "600.0", "updateTime": None}]},
+                r("00:00", 787),  r("01:00", 930),  r("02:00", 3148), r("03:00", 876),
+                r("04:00", 805),  r("05:00", 798),  r("06:00", 765),  r("07:00", 0),
+                r("08:00", -697), r("09:00", -100), r("10:00", -1095),r("11:00", -1619),
+                r("12:00", -1632),r("13:00", -1461),r("14:00", -1196),r("15:00", -818),
+                r("16:00", -285), r("17:00", 272),  r("18:00", 576),  r("19:00", 868),
+                r("20:00", 2220), r("21:00", 3536), r("23:00", 760)]},
         ]
 
-    def _day_infos_peak_export(self):
-        # Records for 2025-06-11: single peak record with Grid exporting (-600 W).
-        # With offpeak=00:00-06:00 and 08:00 in peak:
-        #   value = -600/12 = -50 → extra_load=2.3, export=47.7
-        #   Grid.peakexport = 47.7 → getCalcExport() = 47.7 Wh
+    def _day_infos_cloudy(self):
+        # Hourly records for 2025-06-11 (cloudy day with export, from 2026-05-04 real data).
+        # offpeak=00:00-06:00 (records at 00:00-05:00 are offpeak; 06:00+ is peak).
+        # Expected results (Wh):
+        #   Grid offpeak = 968/12 = 80.7,  peak = 2799/12 - 9*2.3 ≈ 212.6 → import 293.2
+        #   Grid peakexport = 135.8 (exact)
+        #   PV   peak     = 5312/12 = 442.7
+        #   Load offpeak  = 80.7,   peak = 6270/12 = 522.5 → load 603.2
+        r = self._r
         return [
             {"label": "PV",      "unit": "W", "records": [
-                {"time": "08:00", "value": "0.0",    "updateTime": None}]},
-            {"label": "Battery", "unit": "W", "records": [
-                {"time": "08:00", "value": "0.0",    "updateTime": None}]},
-            {"label": "SOC",     "unit": "%", "records": [
-                {"time": "08:00", "value": "50.0",   "updateTime": None}]},
+                r("07:00", 409), r("08:00", 399), r("09:00", 369), r("10:00", 666),
+                r("11:00", 887), r("12:00", 765), r("13:00", 646), r("14:00", 393),
+                r("15:00", 298), r("16:00", 313), r("17:00", 154), r("18:00", 13)]},
+            {"label": "Battery", "unit": "W", "records": [r("12:00", 0)]},
+            {"label": "SOC",     "unit": "%", "records": [r("12:00", 50)]},
             {"label": "Load",    "unit": "W", "records": [
-                {"time": "08:00", "value": "300.0",  "updateTime": None}]},
+                r("00:00", 134), r("01:00", 134), r("02:00", 130), r("03:00", 133),
+                r("04:00", 180), r("05:00", 257), r("06:00", 251), r("07:00", 328),
+                r("08:00", 317), r("09:00", 288), r("10:00", 372), r("11:00", 415),
+                r("12:00", 388), r("13:00", 350), r("14:00", 315), r("15:00", 219),
+                r("16:00", 376), r("17:00", 492), r("18:00", 358), r("19:00", 347),
+                r("20:00", 357), r("21:00", 368), r("22:00", 364), r("23:00", 365)]},
             {"label": "Grid",    "unit": "W", "records": [
-                {"time": "08:00", "value": "-600.0", "updateTime": None}]},
+                r("00:00", 134), r("01:00", 134), r("02:00", 130), r("03:00", 133),
+                r("04:00", 180), r("05:00", 257), r("06:00", 251), r("07:00", -82),
+                r("08:00", -82), r("09:00", -82), r("10:00", -300),r("11:00", -480),
+                r("12:00", -384),r("13:00", -304),r("14:00", -82), r("15:00", -82),
+                r("16:00", 62),  r("17:00", 338), r("18:00", 347), r("19:00", 347),
+                r("20:00", 357), r("21:00", 368), r("22:00", 364), r("23:00", 365)]},
         ]
