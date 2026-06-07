@@ -1,18 +1,20 @@
+from dataclasses import dataclass
 from datetime import datetime
 
 
+@dataclass
 class PriceData:
-    def __init__(self):
-        self.current_off_peak = 0.067
-        self.current_peak = 28.26
-        self.current_off_peak_start = "00:00"
-        self.current_off_peak_stop = "00:07"
-        self.current_start = datetime.strptime("2025-07-10", "%Y-%m-%d")
-        self.current_stop = datetime.strptime("2026-09-10", "%Y-%m-%d")
-        self.off_peak_average = 0.96
-        self.current_export = 0.165
-        self.standing_charge = 0.6
-        self.compare_standing_charge = 0.53
-        self.compare_rate = 0.25
-        self.original_price = 6210 - 3.53  # £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
-        self.interest_rate = 3.7
+    current_off_peak: float = 0.067
+    current_peak: float = 28.26
+    current_off_peak_start: str = "00:00"
+    current_off_peak_stop: str = "00:07"
+    current_start: datetime = datetime.strptime("2025-07-10", "%Y-%m-%d")
+    current_stop: datetime = datetime.strptime("2026-09-10", "%Y-%m-%d")
+    off_peak_average: float = 0.96
+    current_export: float = 0.165
+    standing_charge: float = 0.6
+    compare_standing_charge: float = 0.53
+    compare_rate: float = 0.25
+    # £3.53 adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
+    original_price: float = 6210 - 3.53
+    interest_rate: float = 3.7

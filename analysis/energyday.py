@@ -18,56 +18,52 @@ class IntervalSummary(Resource):
         self.offpeak = 0
         self.offpeakexport = 0
         self.offpeakpercentage = 0
-        is_off_peak = False
-        recharged = False
-        battery_ran_out = False
 
         start = datetime.strptime(offpeakstart, "%H:%M")
         stop = datetime.strptime(offpeakstop, "%H:%M")
+        recharged = False
+        battery_ran_out = False
 
         for record in self.records:
             time = datetime.strptime(record['time'], "%H:%M")
             value = float(record['value']) / 12
-
-            if time >= start:
-                is_off_peak = True
-            if is_off_peak:
-                if time >= stop:
-                    is_off_peak = False
-
-            if is_off_peak:
-                if not recharged:
-                    recharged = True
-                    if is_load:
-                        battery.recharge()
-
-                if value > 0:
-                    self.offpeak = self.offpeak + value
-                else:
-                    extra_load = min(value * -1, 2.3)
-                    export = (value * -1) - extra_load
-                    self.offpeakexport = self.offpeakexport + export
-                    self.offpeak = self.offpeak - extra_load
+            if start <= time < stop:
+                recharged = self._process_offpeak_record(value, battery, is_load, recharged)
             else:
-                if value > 0:
-                    self.peak = self.peak + value
-                    if is_load:
-                        temp = battery.utilise(value, time)
-                        if temp > 0:
-                            battery_ran_out = True
-                else:
-                    extra_load = min(value * -1, 2.3)
-                    export = (value * -1) - extra_load
-                    self.peakexport = self.peakexport + export
-                    self.peak = self.peak - extra_load
-                    if is_load:
-                        battery.pv_charge(export, time)
+                battery_ran_out = self._process_peak_record(value, time, battery, is_load) or battery_ran_out
 
         if battery_ran_out:
             battery.set_ran_out()
 
         if self.offpeak + self.peak > 0:
             self.offpeakpercentage = self.offpeak / (self.offpeak + self.peak)
+
+    def _process_offpeak_record(self, value, battery: VirtualBattery, is_load: bool, recharged: bool) -> bool:
+        if not recharged:
+            if is_load:
+                battery.recharge()
+            recharged = True
+        if value > 0:
+            self.offpeak += value
+        else:
+            extra_load = min(-value, 2.3)
+            self.offpeakexport += -value - extra_load
+            self.offpeak -= extra_load
+        return recharged
+
+    def _process_peak_record(self, value, time, battery: VirtualBattery, is_load: bool) -> bool:
+        if value > 0:
+            self.peak += value
+            if is_load:
+                return battery.utilise(value, time) > 0
+        else:
+            extra_load = min(-value, 2.3)
+            export = -value - extra_load
+            self.peakexport += export
+            self.peak -= extra_load
+            if is_load:
+                battery.pv_charge(export, time)
+        return False
 
 
 class EnergyDay(Resource):
