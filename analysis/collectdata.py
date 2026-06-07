@@ -55,6 +55,10 @@ def _parse_cli_args(argv):
             overrides['exportWindowStop'] = value
         elif key_lower == 'useexport':
             overrides['useExport'] = value
+        elif key_lower == 'offpeakshift':
+            overrides['offPeakShift'] = value
+        elif key_lower == 'offpeakbaseline':
+            overrides['offPeakBaseline'] = float(value)
         elif key_lower == 'dischargeefficiency':
             overrides.setdefault('virtualBattery', {})['dischargeEfficiency'] = float(value)
         elif key_lower == 'pvchargeefficiency':
@@ -98,6 +102,8 @@ def _load_settings(argv):
         'exportWindowStart': '17:00',
         'exportWindowStop': '19:00',
         'useExport': 'OFF',
+        'offPeakShift': 'ON',
+        'offPeakBaseline': 0.96,
         'virtualBattery': {
             'dischargeEfficiency': 0.92,
             'pvChargeEfficiency': 0.96,
@@ -128,6 +134,8 @@ def _print_usage():
     print("  exportWindowStart:HH:MM Battery-to-grid export window start")
     print("  exportWindowStop:HH:MM  Battery-to-grid export window stop")
     print("  useExport:ON|OFF        Sell battery back to grid during export window")
+    print("  offPeakShift:ON|OFF     Include off-peak load-shifting in savings totals (default: ON)")
+    print("  offPeakBaseline:N       Expected kWh/day at off-peak for a 7-hour window (default: 0.96)")
     print("")
     print("Virtual battery options:")
     print("  batterySize:N           Battery capacity in Wh")
@@ -260,8 +268,12 @@ async def main():
                 label = os.path.splitext(os.path.basename(price_file))[0]
                 tmp_price = PriceData()
                 battery = _make_battery(settings, tmp_price)
-                prices = EnergyPrices(energy_prices_data, battery,
-                                      original_price=original_price, label=label)
+                prices = EnergyPrices(
+                    energy_prices_data, battery,
+                    original_price=original_price, label=label,
+                    off_peak_baseline_kwh=float(settings['offPeakBaseline']),
+                    off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
+                )
 
                 current_month = datetime.today().strftime('%Y-%m')
                 total_months = (

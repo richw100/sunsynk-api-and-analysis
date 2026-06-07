@@ -57,7 +57,14 @@ class EnergySummary:
 
         time_diff = (datetime.strptime(price_data.current_off_peak_stop, "%H:%M")
                      - datetime.strptime(price_data.current_off_peak_start, "%H:%M"))
-        price_data.off_peak_average = 0.96 * (time_diff.total_seconds() / 3600) / 7
+        # Scale the configured reference baseline (kWh/day for a standard 7-hour Economy 7
+        # window) to the actual off-peak window length.  The result is the expected daily
+        # off-peak import when no load has been deliberately shifted to the cheap tariff.
+        # off_peak_excess = actual_off_peak_import - (off_peak_average * days)
+        # off_peak_excess_savings = off_peak_excess * (peak_rate - off_peak_rate)
+        price_data.off_peak_average = (
+            price_data.off_peak_baseline_kwh * (time_diff.total_seconds() / 3600) / 7
+        )
 
         self.price_data = price_data
 

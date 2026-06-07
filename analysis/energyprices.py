@@ -8,11 +8,15 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 
 class EnergyPrices:
     def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
-                 label: str = ""):
+                 label: str = "", off_peak_baseline_kwh: float = 0.96,
+                 off_peak_shift_enabled: bool = True):
         self.prices = prices
         self.label = label
+        self._off_peak_baseline_kwh = off_peak_baseline_kwh
+        self.off_peak_shift_enabled = off_peak_shift_enabled
         self.aggregator = EnergySummaryAggregator()
         self.price_data = PriceData()
+        self.price_data.off_peak_baseline_kwh = off_peak_baseline_kwh
         self.original_price = original_price if original_price is not None else self.price_data.original_price
         self.orig_battery = battery
         self.battery = self._make_battery(self.price_data)
@@ -46,6 +50,7 @@ class EnergyPrices:
                 new_stop = datetime.strptime(item['dateto'], "%Y-%m-%d")
                 if new_start <= date_dt <= new_stop:
                     self.price_data = PriceData()
+                    self.price_data.off_peak_baseline_kwh = self._off_peak_baseline_kwh
                     self.price_data.current_off_peak = float(item['offpeakRate'])
                     self.price_data.current_peak = float(item['peakRate'])
                     self.price_data.current_export = float(item['exportRate'])
@@ -79,7 +84,7 @@ class EnergyPrices:
     def get_derived(self):
         t = self.get_grand_totals()
         seg = t['total_export_amount_calc']
-        op_excess_savings = t['total_off_peak_excess_savings']
+        op_excess_savings = t['total_off_peak_excess_savings'] if self.off_peak_shift_enabled else 0
 
         def pct(amount):
             return round(amount * 100 / self.original_price, 2)
@@ -136,7 +141,8 @@ class EnergyPrices:
         print(f"  Solar savings from generation (excl. off-peak shifting):")
         print(f"    Interval-calculated: £{t['total_savings_calc']} ({d['calc_roi_pct']}% of install cost)")
         print(f"    Inverter-reported:   £{t['total_savings_supplied']} ({d['supplied_roi_pct']}% of install cost)")
-        print(f"  Total savings incl. off-peak load shifting:")
+        shift_label = "incl. off-peak load shifting" if self.off_peak_shift_enabled else "(off-peak shifting disabled)"
+        print(f"  Total savings {shift_label}:")
         print(f"    Interval-calculated: £{d['calc_savings']}    Inverter-reported: £{d['supplied_savings']}")
         print("")
         last_summary = self.aggregator.get_last_summary()
@@ -173,6 +179,8 @@ class EnergyPrices:
                   f"    Peak: {round(t['total_calc_import_peak']/days, 2)}kWh   Off-peak: {round(t['total_calc_import_off_peak']/days, 2)}kWh")
 
     def print_totals(self):
+        if not self.off_peak_shift_enabled:
+            return
         t = self.get_grand_totals()
         print("")
         print("OFF-PEAK IMPORT ANALYSIS")

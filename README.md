@@ -56,6 +56,8 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `exportWindowStart:` | `HH:MM` | Battery-to-grid export window start |
 | `exportWindowStop:` | `HH:MM` | Battery-to-grid export window stop |
 | `useExport:` | `ON`\|`OFF` | Sell battery charge back to grid during export window |
+| `offPeakShift:` | `ON`\|`OFF` | Include off-peak load-shifting savings in totals and ROI (default: `ON`) |
+| `offPeakBaseline:` | float (kWh) | Expected daily off-peak import for a 7-hour window when no load is shifted (default: `0.96`) |
 
 ### Virtual battery options
 
@@ -137,9 +139,13 @@ Money saved compared to having no solar installation:
 
 ### OFF-PEAK IMPORT ANALYSIS
 
+This section can be disabled with `offPeakShift:OFF`. When enabled, it separates "normal" overnight usage from load deliberately shifted to the cheap tariff.
+
 - **Total off-peak import**: all electricity imported during the off-peak window.
-- **Excess above expected baseline**: off-peak import beyond a per-day baseline (96% of off-peak window hours ÷ 7). Positive values indicate load has been deliberately shifted to the cheap tariff (e.g. EV charging, dishwasher timer).
+- **Excess above expected baseline**: off-peak import beyond the expected daily baseline. The baseline is `offPeakBaseline × (window hours ÷ 7)` — the configured reference value (default `0.96` kWh/day) scaled proportionally to the actual tariff window length relative to the standard 7-hour Economy 7 window. Positive excess indicates load has been deliberately shifted to the cheap tariff (e.g. EV charging, dishwasher timer).
 - **Saving from off-peak load shifting**: excess kWh × (peak rate − off-peak rate).
+
+The `offPeakBaseline` represents how many kWh/day you would normally import at off-peak even without deliberate load shifting (standby loads, etc.), calibrated for a 7-hour Economy 7 window. Adjust it to match your household's actual overnight baseline if the default (0.96 kWh) does not fit.
 
 ---
 

@@ -10,7 +10,8 @@ class PriceData:
     current_off_peak_stop: str = "00:07"
     current_start: datetime = datetime.strptime("2025-07-10", "%Y-%m-%d")
     current_stop: datetime = datetime.strptime("2026-09-10", "%Y-%m-%d")
-    off_peak_average: float = 0.96
+    off_peak_average: float = 0.96         # computed by EnergySummary; do not set directly
+    off_peak_baseline_kwh: float = 0.96   # expected kWh/day at off-peak for a 7-hour window
     current_export: float = 0.165
     standing_charge: float = 0.6
     # £3.53 adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
