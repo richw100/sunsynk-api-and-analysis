@@ -12,115 +12,126 @@ class QueryType(Enum):
 
 
 class EnergySummary:
-    def __init__(self, priceData: PriceData, battery: VirtualBattery, currentCumulativeSavings=0, currentAltInvestmentValue=0, remainderInput=0):
+    def __init__(self, price_data: PriceData, battery: VirtualBattery,
+                 current_cumulative_savings=0, current_alt_investment_value=0, remainder_input=0):
 
         self.battery = battery
 
         self.days = 0
-        self.totalCalcExport = 0
-        self.totalCalcImport = 0
-        self.totalCalcPV = 0
-        self.totalCalcLoad = 0
-        self.totalCalcLoadOffpeak = 0
-        self.totalCalcLoadPeak = 0
+        self.total_calc_export = 0
+        self.total_calc_import = 0
+        self.total_calc_pv = 0
+        self.total_calc_load = 0
+        self.total_calc_load_off_peak = 0
+        self.total_calc_load_peak = 0
 
-        self.totalSuppliedExport = 0
-        self.totalSuppliedImport = 0
-        self.totalSuppliedLoad = 0
-        self.totalSuppliedPV = 0
+        self.total_supplied_export = 0
+        self.total_supplied_import = 0
+        self.total_supplied_load = 0
+        self.total_supplied_pv = 0
 
-        self.totalCalcImportOffPeak = 0
-        self.totalCalcExportOffPeak = 0
-        self.totalCalcImportPeak = 0
-        self.totalCalcExportPeak = 0
+        self.total_calc_import_off_peak = 0
+        self.total_calc_export_off_peak = 0
+        self.total_calc_import_peak = 0
+        self.total_calc_export_peak = 0
 
-        self.offPeakExcess = 0
-        self.offPeakExcessSavings = 0
+        self.off_peak_excess = 0
+        self.off_peak_excess_savings = 0
 
-        self.totalSavedCalc = 0
-        self.totalSavedSupplied = 0
-        self.totalSavedAmountCalc = 0
-        self.totalSavedAmountSupplied = 0
-        self.totalExportAmountCalc = 0
-        self.totalExportAmountSupplied = 0
-        self.totalSavingsCalc = 0
-        self.totalSavingsSupplied = 0
-        self.TotalCost = 0
-        self.TotalCostWithoutSolar = 0
-        self.CompareCost = 0
-        self.CompareCostWithoutSolar = 0
-        self.remainderInput = remainderInput
+        self.total_saved_calc = 0
+        self.total_saved_supplied = 0
+        self.total_saved_amount_calc = 0
+        self.total_saved_amount_supplied = 0
+        self.total_export_amount_calc = 0
+        self.total_export_amount_supplied = 0
+        self.total_savings_calc = 0
+        self.total_savings_supplied = 0
+        self.total_cost = 0
+        self.total_cost_without_solar = 0
+        self.compare_cost = 0
+        self.compare_cost_without_solar = 0
+        self.remainder_input = remainder_input
 
-        self.totalSavedInPeriod = remainderInput
-        self.cumulativeSavings = currentCumulativeSavings
-        self.altInvestValue = currentAltInvestmentValue
-        self.addedToCumulative = 0
+        self.total_saved_in_period = remainder_input
+        self.cumulative_savings = current_cumulative_savings
+        self.alt_invest_value = current_alt_investment_value
+        self.added_to_cumulative = 0
 
-        time_difference = datetime.strptime(priceData.currentOffPeakStop, "%H:%M") - datetime.strptime(priceData.currentOffPeakStart, "%H:%M")
-        priceData.offPeakAverage = 0.96 * ( time_difference.total_seconds() / 3600 ) / 7
+        time_diff = (datetime.strptime(price_data.current_off_peak_stop, "%H:%M")
+                     - datetime.strptime(price_data.current_off_peak_start, "%H:%M"))
+        price_data.off_peak_average = 0.96 * (time_diff.total_seconds() / 3600) / 7
 
-        self.priceData = priceData
+        self.price_data = price_data
 
-    def getRemainder(self):
+    def get_remainder(self):
         self.recalculate()
-        self.totalSavedInPeriod = self.totalSavingsCalc + self.remainderInput
-        toAdd = self.totalSavedInPeriod - self.addedToCumulative
-        self.addedToCumulative += toAdd
-        return toAdd
+        self.total_saved_in_period = self.total_savings_calc + self.remainder_input
+        to_add = self.total_saved_in_period - self.added_to_cumulative
+        self.added_to_cumulative += to_add
+        return to_add
 
-    def newMonth(self):
-        remainder = self.getRemainder()
-        interest = self.cumulativeSavings * (self.priceData.InterestRate/1200)
-        toAdd = remainder + interest
-        self.cumulativeSavings += toAdd
+    def new_month(self):
+        remainder = self.get_remainder()
+        interest = self.cumulative_savings * (self.price_data.interest_rate/1200)
+        self.cumulative_savings += remainder + interest
 
-        interest = self.altInvestValue * (self.priceData.InterestRate/1200)
-        self.altInvestValue += interest
+        interest = self.alt_invest_value * (self.price_data.interest_rate/1200)
+        self.alt_invest_value += interest
 
-    def addData(self, energyday):
+    def add_data(self, energyday):
         self.days += 1
-        self.totalCalcExport += energyday.getCalcExport(QueryType.BOTH)
-        self.totalCalcImport += energyday.getCalcImport()
-        self.totalCalcPV += energyday.getCalcPV()
-        self.totalCalcLoad += energyday.getCalcLoad()
-        self.totalCalcLoadOffpeak += energyday.getCalcLoadOffPeak()
-        self.totalCalcLoadPeak += energyday.getCalcLoadPeak()
+        self.total_calc_export += energyday.get_calc_export(QueryType.BOTH)
+        self.total_calc_import += energyday.get_calc_import()
+        self.total_calc_pv += energyday.get_calc_pv()
+        self.total_calc_load += energyday.get_calc_load()
+        self.total_calc_load_off_peak += energyday.get_calc_load_off_peak()
+        self.total_calc_load_peak += energyday.get_calc_load_peak()
 
-        self.totalSuppliedExport += energyday.getSuppliedExport()
-        self.totalSuppliedImport += energyday.getSuppliedImport()
-        self.totalSuppliedLoad += energyday.getSuppliedLoad()
-        self.totalSuppliedPV += energyday.getSuppliedPV()
+        self.total_supplied_export += energyday.get_supplied_export()
+        self.total_supplied_import += energyday.get_supplied_import()
+        self.total_supplied_load += energyday.get_supplied_load()
+        self.total_supplied_pv += energyday.get_supplied_pv()
 
-        self.totalCalcImportOffPeak += energyday.getCalcImport(QueryType.OFFPEAK)
-        self.totalCalcExportOffPeak += energyday.getCalcExport(QueryType.OFFPEAK)
-        self.totalCalcImportPeak += energyday.getCalcImport(QueryType.PEAK)
-        self.totalCalcExportPeak += energyday.getCalcExport(QueryType.PEAK)
+        self.total_calc_import_off_peak += energyday.get_calc_import(QueryType.OFFPEAK)
+        self.total_calc_export_off_peak += energyday.get_calc_export(QueryType.OFFPEAK)
+        self.total_calc_import_peak += energyday.get_calc_import(QueryType.PEAK)
+        self.total_calc_export_peak += energyday.get_calc_export(QueryType.PEAK)
 
-        self.totalSavedCalc += energyday.getCalcLoad() - energyday.getCalcImport()
-        self.totalSavedSupplied += energyday.getSuppliedLoad() - energyday.getSuppliedImport()
+        self.total_saved_calc += energyday.get_calc_load() - energyday.get_calc_import()
+        self.total_saved_supplied += energyday.get_supplied_load() - energyday.get_supplied_import()
 
     def recalculate(self):
-        self.totalSavedAmountCalc = ((self.totalCalcLoadPeak/1000 - self.totalCalcImportPeak/1000) * self.priceData.currentPeak) + ((self.totalCalcLoadOffpeak/1000 - self.totalCalcImportOffPeak/1000) * self.priceData.currentOffPeak)
+        self.total_saved_amount_calc = (
+            (self.total_calc_load_peak/1000 - self.total_calc_import_peak/1000) * self.price_data.current_peak
+            + (self.total_calc_load_off_peak/1000 - self.total_calc_import_off_peak/1000) * self.price_data.current_off_peak
+        )
 
-        self.totalSavedAmountSupplied = self.totalSavedSupplied * self.priceData.currentPeak
+        self.total_saved_amount_supplied = self.total_saved_supplied * self.price_data.current_peak
 
-        self.totalExportAmountCalc = (self.totalCalcExport/1000) * self.priceData.currentExport
-        self.totalExportAmountSupplied = self.totalSuppliedExport * self.priceData.currentExport
+        self.total_export_amount_calc = (self.total_calc_export/1000) * self.price_data.current_export
+        self.total_export_amount_supplied = self.total_supplied_export * self.price_data.current_export
 
-        self.totalSavingsCalc = self.totalSavedAmountCalc + self.totalExportAmountCalc
-        self.totalSavingsSupplied = self.totalSavedAmountSupplied + self.totalExportAmountSupplied
+        self.total_savings_calc = self.total_saved_amount_calc + self.total_export_amount_calc
+        self.total_savings_supplied = self.total_saved_amount_supplied + self.total_export_amount_supplied
 
-        self.offPeakExcess = (self.totalCalcImportOffPeak/1000) - (self.priceData.offPeakAverage*self.days)
-        self.offPeakExcessSavings = (self.offPeakExcess) * (self.priceData.currentPeak - self.priceData.currentOffPeak)
+        self.off_peak_excess = (self.total_calc_import_off_peak/1000) - (self.price_data.off_peak_average*self.days)
+        self.off_peak_excess_savings = self.off_peak_excess * (self.price_data.current_peak - self.price_data.current_off_peak)
 
-        standingCharge = self.days * self.priceData.standingCharge
-        ComparestandingCharge = self.days * self.priceData.ComparestandingCharge
+        standing_charge = self.days * self.price_data.standing_charge
+        compare_standing_charge = self.days * self.price_data.compare_standing_charge
 
-        self.CompareCost = (self.totalCalcImport/1000 * self.priceData.CompareRate) + ComparestandingCharge
-        self.CompareCostWithoutSolar = (self.totalCalcLoad/1000 * self.priceData.CompareRate) + ComparestandingCharge
-        self.TotalCost = (self.totalCalcImportPeak/1000 * self.priceData.currentPeak) + (self.totalCalcImportOffPeak/1000 * self.priceData.currentOffPeak) + standingCharge
-
-        self.TotalCostWithoutSolar = (self.totalCalcLoadPeak/1000 * self.priceData.currentPeak) + (self.totalCalcLoadOffpeak/1000 * self.priceData.currentOffPeak) + standingCharge
+        self.compare_cost = (self.total_calc_import/1000 * self.price_data.compare_rate) + compare_standing_charge
+        self.compare_cost_without_solar = (self.total_calc_load/1000 * self.price_data.compare_rate) + compare_standing_charge
+        self.total_cost = (
+            (self.total_calc_import_peak/1000 * self.price_data.current_peak)
+            + (self.total_calc_import_off_peak/1000 * self.price_data.current_off_peak)
+            + standing_charge
+        )
+        self.total_cost_without_solar = (
+            (self.total_calc_load_peak/1000 * self.price_data.current_peak)
+            + (self.total_calc_load_off_peak/1000 * self.price_data.current_off_peak)
+            + standing_charge
+        )
 
 
 class EnergySummaryAggregator:
@@ -132,81 +143,81 @@ class EnergySummaryAggregator:
 
     def get_grand_totals(self):
         totals = {
-            "totalCalcExport": 0,
-            "totalCalcImport": 0,
-            "totalCalcPV": 0,
-            "totalCalcLoad": 0,
-            "totalSuppliedExport": 0,
-            "totalSuppliedImport": 0,
-            "totalSuppliedLoad": 0,
-            "totalSuppliedPV": 0,
-            "totalCalcImportOffPeak": 0,
-            "totalCalcExportOffPeak": 0,
-            "totalCalcImportPeak": 0,
-            "totalCalcExportPeak": 0,
-            "totalOffPeakExcess": 0,
-            "totalOffPeakExcessSavings": 0,
+            "total_calc_export": 0,
+            "total_calc_import": 0,
+            "total_calc_pv": 0,
+            "total_calc_load": 0,
+            "total_supplied_export": 0,
+            "total_supplied_import": 0,
+            "total_supplied_load": 0,
+            "total_supplied_pv": 0,
+            "total_calc_import_off_peak": 0,
+            "total_calc_export_off_peak": 0,
+            "total_calc_import_peak": 0,
+            "total_calc_export_peak": 0,
+            "total_off_peak_excess": 0,
+            "total_off_peak_excess_savings": 0,
             "days": 0,
-            "totalSavedCalc": 0,
-            "totalSavedSupplied": 0,
-            "totalSavedAmountCalc": 0,
-            "totalSavedAmountSupplied": 0,
-            "totalExportAmountCalc": 0,
-            "totalExportAmountSupplied": 0,
-            "totalSavingsCalc": 0,
-            "totalSavingsSupplied": 0,
-            "TotalCost": 0,
-            "TotalCostWithoutSolar": 0,
-            "CompareCost": 0,
-            "CompareCostWithoutSolar": 0,
-            "batteryCostFromGrid": 0,
-            "batteryNominalCost": 0,
-            "batteryLostExportCost": 0,
-            "batteryChargeAmount": 0,
-            "batteryExportCost": 0,
-            "batteryExported": 0,
-            "batteryDaysRunOut": 0,
-            "batteryExtraRequired": 0
+            "total_saved_calc": 0,
+            "total_saved_supplied": 0,
+            "total_saved_amount_calc": 0,
+            "total_saved_amount_supplied": 0,
+            "total_export_amount_calc": 0,
+            "total_export_amount_supplied": 0,
+            "total_savings_calc": 0,
+            "total_savings_supplied": 0,
+            "total_cost": 0,
+            "total_cost_without_solar": 0,
+            "compare_cost": 0,
+            "compare_cost_without_solar": 0,
+            "battery_cost_from_grid": 0,
+            "battery_nominal_cost": 0,
+            "battery_lost_export_cost": 0,
+            "battery_charge_amount": 0,
+            "battery_export_cost": 0,
+            "battery_exported": 0,
+            "battery_days_run_out": 0,
+            "battery_extra_required": 0,
         }
 
         for summary in self.summaries:
             summary.recalculate()
-            totals["totalCalcExport"] += summary.totalCalcExport/1000
-            totals["totalCalcImport"] += summary.totalCalcImport/1000
-            totals["totalCalcPV"] += summary.totalCalcPV/1000
-            totals["totalCalcLoad"] += summary.totalCalcLoad/1000
-            totals["totalSuppliedExport"] += summary.totalSuppliedExport
-            totals["totalSuppliedImport"] += summary.totalSuppliedImport
-            totals["totalSuppliedLoad"] += summary.totalSuppliedLoad
-            totals["totalSuppliedPV"] += summary.totalSuppliedPV
-            totals["totalCalcImportOffPeak"] += summary.totalCalcImportOffPeak/1000
-            totals["totalCalcExportOffPeak"] += summary.totalCalcExportOffPeak/1000
-            totals["totalCalcImportPeak"] += summary.totalCalcImportPeak/1000
-            totals["totalCalcExportPeak"] += summary.totalCalcExportPeak/1000
-            totals["totalOffPeakExcess"] += summary.offPeakExcess
-            totals["totalOffPeakExcessSavings"] += summary.offPeakExcessSavings
+            totals["total_calc_export"] += summary.total_calc_export/1000
+            totals["total_calc_import"] += summary.total_calc_import/1000
+            totals["total_calc_pv"] += summary.total_calc_pv/1000
+            totals["total_calc_load"] += summary.total_calc_load/1000
+            totals["total_supplied_export"] += summary.total_supplied_export
+            totals["total_supplied_import"] += summary.total_supplied_import
+            totals["total_supplied_load"] += summary.total_supplied_load
+            totals["total_supplied_pv"] += summary.total_supplied_pv
+            totals["total_calc_import_off_peak"] += summary.total_calc_import_off_peak/1000
+            totals["total_calc_export_off_peak"] += summary.total_calc_export_off_peak/1000
+            totals["total_calc_import_peak"] += summary.total_calc_import_peak/1000
+            totals["total_calc_export_peak"] += summary.total_calc_export_peak/1000
+            totals["total_off_peak_excess"] += summary.off_peak_excess
+            totals["total_off_peak_excess_savings"] += summary.off_peak_excess_savings
             totals["days"] += summary.days
-            totals["totalSavedCalc"] += summary.totalSavedCalc/1000
-            totals["totalSavedSupplied"] += summary.totalSavedSupplied
-            totals["totalSavedAmountCalc"] += summary.totalSavedAmountCalc
-            totals["totalSavedAmountSupplied"] += summary.totalSavedAmountSupplied
-            totals["totalExportAmountCalc"] += summary.totalExportAmountCalc
-            totals["totalExportAmountSupplied"] += summary.totalExportAmountSupplied
-            totals["totalSavingsCalc"] += summary.totalSavingsCalc
-            totals["totalSavingsSupplied"] += summary.totalSavingsSupplied
-            totals["TotalCost"] += summary.TotalCost
-            totals["TotalCostWithoutSolar"] += summary.TotalCostWithoutSolar
-            totals["CompareCost"] += summary.CompareCost
-            totals["CompareCostWithoutSolar"] += summary.CompareCostWithoutSolar
-            summary.battery.getSavings()
-            totals["batteryCostFromGrid"] += summary.battery.costFromGrid
-            totals["batteryNominalCost"] += summary.battery.nominalCost
-            totals["batteryLostExportCost"] += summary.battery.lostExportCost
-            totals["batteryChargeAmount"] += summary.battery.getChargeAmountkWh()
-            totals["batteryExportCost"] += summary.battery.exportCost
-            totals["batteryExported"] += summary.battery.exported/1000
-            totals["batteryDaysRunOut"] += summary.battery.daysRunOut
-            totals["batteryExtraRequired"] += summary.battery.extraRequired/1000
+            totals["total_saved_calc"] += summary.total_saved_calc/1000
+            totals["total_saved_supplied"] += summary.total_saved_supplied
+            totals["total_saved_amount_calc"] += summary.total_saved_amount_calc
+            totals["total_saved_amount_supplied"] += summary.total_saved_amount_supplied
+            totals["total_export_amount_calc"] += summary.total_export_amount_calc
+            totals["total_export_amount_supplied"] += summary.total_export_amount_supplied
+            totals["total_savings_calc"] += summary.total_savings_calc
+            totals["total_savings_supplied"] += summary.total_savings_supplied
+            totals["total_cost"] += summary.total_cost
+            totals["total_cost_without_solar"] += summary.total_cost_without_solar
+            totals["compare_cost"] += summary.compare_cost
+            totals["compare_cost_without_solar"] += summary.compare_cost_without_solar
+            summary.battery.get_savings()
+            totals["battery_cost_from_grid"] += summary.battery.cost_from_grid
+            totals["battery_nominal_cost"] += summary.battery.nominal_cost
+            totals["battery_lost_export_cost"] += summary.battery.lost_export_cost
+            totals["battery_charge_amount"] += summary.battery.get_charge_amount_kwh()
+            totals["battery_export_cost"] += summary.battery.export_cost
+            totals["battery_exported"] += summary.battery.exported/1000
+            totals["battery_days_run_out"] += summary.battery.days_run_out
+            totals["battery_extra_required"] += summary.battery.extra_required/1000
 
         for key, value in totals.items():
             if isinstance(value, float):
@@ -217,7 +228,7 @@ class EnergySummaryAggregator:
     def update_last_summary(self, energyday):
         if not self.summaries:
             raise IndexError("No EnergySummary objects to update.")
-        self.summaries[-1].addData(energyday)
+        self.summaries[-1].add_data(energyday)
 
     def get_last_summary(self):
         if not self.summaries:

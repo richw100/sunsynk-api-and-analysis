@@ -16,14 +16,14 @@ class EnergyMonth(Resource):
             elif item['label'] == "Import" or item['label'] == "Purchased electricity":
                 self.Import = item
 
-    def get_Load(self):
+    def get_load(self):
         return self.Load
 
-    def get_PV(self):
+    def get_pv(self):
         return self.PV
 
-    def get_Export(self):
+    def get_export(self):
         return self.Export
 
-    def get_Import(self):
+    def get_import(self):
         return self.Import

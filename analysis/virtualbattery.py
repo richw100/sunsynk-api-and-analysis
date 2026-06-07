@@ -4,101 +4,100 @@ from analysis.pricedata import PriceData
 
 
 class VirtualBattery:
-    def __init__(self, priceData: PriceData, batterySize=5000, UsePV=0, startCharging=1000, stopCharging=2000,
-                 exportWindowStart="17:00", exportWindowStop="19:00",
-                 dischargeEfficiency=0.92, pvChargeEfficiency=0.96, maxOutputW=2400):
-        self.batterySize = batterySize
-        self.batteryStatus = batterySize
-        self.chargeAmount = 0
-        self.shouldPVCharge = 0
-        self.PVInput = 0
+    def __init__(self, price_data: PriceData, battery_size=5000, use_pv=0,
+                 start_charging=1000, stop_charging=2000,
+                 export_window_start="17:00", export_window_stop="19:00",
+                 discharge_efficiency=0.92, pv_charge_efficiency=0.96, max_output_w=2400):
+        self.battery_size = battery_size
+        self.battery_status = battery_size
+        self.charge_amount = 0
+        self.should_pv_charge = 0
+        self.pv_input = 0
         self.drawn = 0
-        self.PVEnabled = UsePV
-        self.startCharging = startCharging
-        self.stopCharging = stopCharging
-        self.priceData = priceData
-        self.lostExportCost = 0
+        self.pv_enabled = use_pv
+        self.start_charging = start_charging
+        self.stop_charging = stop_charging
+        self.price_data = price_data
+        self.lost_export_cost = 0
         self.export = 0
-        self.exportCost = 0
+        self.export_cost = 0
 
         self.savings = 0
-        self.costFromGrid = 0
-        self.nominalCost = 0
+        self.cost_from_grid = 0
+        self.nominal_cost = 0
         self.exported = 0
-        self.extraRequired = 0
-        self.daysRunOut = 0
+        self.extra_required = 0
+        self.days_run_out = 0
 
-        self.exportWindowStart = exportWindowStart
-        self.exportWindowStop = exportWindowStop
-        self.exportStart = datetime.strptime(exportWindowStart, "%H:%M")
-        self.exportStop = datetime.strptime(exportWindowStop, "%H:%M")
-        self.dischargeEfficiency = dischargeEfficiency
-        self.pvChargeEfficiency = pvChargeEfficiency
-        self.maxOutputW = maxOutputW
+        self.export_window_start = export_window_start
+        self.export_window_stop = export_window_stop
+        self.export_start = datetime.strptime(export_window_start, "%H:%M")
+        self.export_stop = datetime.strptime(export_window_stop, "%H:%M")
+        self.discharge_efficiency = discharge_efficiency
+        self.pv_charge_efficiency = pv_charge_efficiency
+        self.max_output_w = max_output_w
 
     def recharge(self):
-        self.chargeAmount += self.batterySize - self.batteryStatus
-        self.batteryStatus = self.batterySize
+        self.charge_amount += self.battery_size - self.battery_status
+        self.battery_status = self.battery_size
 
     def discharge(self, time: datetime):
-        runDownAmount = 1000
+        run_down_amount = 1000
         if self.export == 1:
-            if time > self.exportStart and time < self.exportStop:
-                if self.batteryStatus > runDownAmount:
-                    max5minWh = (self.maxOutputW / 12) / self.dischargeEfficiency
-                    fiveminexportamount = min(max5minWh, (self.batterySize - runDownAmount) / (6*60/5))
-                    self.batteryStatus -= fiveminexportamount
-                    self.exported += fiveminexportamount * self.dischargeEfficiency
+            if time > self.export_start and time < self.export_stop:
+                if self.battery_status > run_down_amount:
+                    max_5min_wh = (self.max_output_w / 12) / self.discharge_efficiency
+                    five_min_export = min(max_5min_wh, (self.battery_size - run_down_amount) / (6*60/5))
+                    self.battery_status -= five_min_export
+                    self.exported += five_min_export * self.discharge_efficiency
 
-    def setRanOut(self):
-        self.daysRunOut += 1
+    def set_ran_out(self):
+        self.days_run_out += 1
 
     def utilise(self, value, time: datetime):
         self.discharge(time)
 
-        max5minWh = (self.maxOutputW / 12) / self.dischargeEfficiency
-        maxvalue = min(max5minWh, value)
+        max_5min_wh = (self.max_output_w / 12) / self.discharge_efficiency
+        maxvalue = min(max_5min_wh, value)
 
-        if maxvalue > (self.batteryStatus / self.dischargeEfficiency):
-            self.drawn += self.batteryStatus * self.dischargeEfficiency
-            temp = (maxvalue - self.batteryStatus) / self.dischargeEfficiency
-            self.batteryStatus = 0
-            self.extraRequired += temp
+        if maxvalue > (self.battery_status / self.discharge_efficiency):
+            self.drawn += self.battery_status * self.discharge_efficiency
+            temp = (maxvalue - self.battery_status) / self.discharge_efficiency
+            self.battery_status = 0
+            self.extra_required += temp
             return temp
-        else:
-            self.batteryStatus -= value
-            self.drawn += value * self.dischargeEfficiency
-            return 0
+        self.battery_status -= value
+        self.drawn += value * self.discharge_efficiency
+        return 0
 
-    def PVCharge(self, value, time: datetime):
+    def pv_charge(self, value, time: datetime):
         self.discharge(time)
 
-        if self.PVEnabled == 1:
-            if self.batteryStatus < self.startCharging:
-                self.shouldPVCharge = 1
-            if self.batteryStatus >= self.stopCharging:
-                self.shouldPVCharge = 0
+        if self.pv_enabled == 1:
+            if self.battery_status < self.start_charging:
+                self.should_pv_charge = 1
+            if self.battery_status >= self.stop_charging:
+                self.should_pv_charge = 0
 
-        if self.shouldPVCharge == 1:
-            postEfficiencyValue = value * self.pvChargeEfficiency
+        if self.should_pv_charge == 1:
+            post_efficiency_value = value * self.pv_charge_efficiency
 
-            if self.batteryStatus + postEfficiencyValue <= self.batterySize:
-                self.batteryStatus += postEfficiencyValue
-                self.PVInput += postEfficiencyValue
+            if self.battery_status + post_efficiency_value <= self.battery_size:
+                self.battery_status += post_efficiency_value
+                self.pv_input += post_efficiency_value
 
-    def totalDrawnkWh(self):
+    def total_drawn_kwh(self):
         return round(self.drawn/1000, 2)
 
-    def getChargeAmountkWh(self):
-        return round(self.chargeAmount/1000, 2)
+    def get_charge_amount_kwh(self):
+        return round(self.charge_amount/1000, 2)
 
-    def getPVChargekWh(self):
-        return round(self.PVInput/1000, 2)
+    def get_pv_charge_kwh(self):
+        return round(self.pv_input/1000, 2)
 
-    def getSavings(self):
-        self.costFromGrid = round((self.chargeAmount/1000)*self.priceData.currentOffPeak, 2)
-        self.nominalCost = round((self.drawn*self.priceData.currentPeak)/1000, 2)
-        self.lostExportCost = round((self.PVInput*self.priceData.currentExport)/1000, 2)
-        self.exportCost = round((self.exported/1000)*self.priceData.currentExport, 2)
-        self.savings = self.nominalCost + self.exportCost - self.costFromGrid - self.lostExportCost
-
+    def get_savings(self):
+        self.cost_from_grid = round((self.charge_amount/1000)*self.price_data.current_off_peak, 2)
+        self.nominal_cost = round((self.drawn*self.price_data.current_peak)/1000, 2)
+        self.lost_export_cost = round((self.pv_input*self.price_data.current_export)/1000, 2)
+        self.export_cost = round((self.exported/1000)*self.price_data.current_export, 2)
+        self.savings = self.nominal_cost + self.export_cost - self.cost_from_grid - self.lost_export_cost
