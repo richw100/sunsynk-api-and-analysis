@@ -10,8 +10,9 @@ os.chdir(PROJECT_ROOT)
 
 from analysis.energy_client import SunsynkEnergyClient
 
-from analysis.calculations import VirtualBattery
-from analysis.calculations import PriceData, EnergyPrices
+from analysis.pricedata import PriceData
+from analysis.virtualbattery import VirtualBattery
+from analysis.energyprices import EnergyPrices
 
 from datetime import datetime
 

@@ -4,7 +4,9 @@ from sunsynk.client import SunsynkClient, InvalidCredentialsException
 from analysis.energy_client import SunsynkEnergyClient
 from analysis.energyday import EnergyDay
 from analysis.energymonth import EnergyMonth
-from analysis.calculations import VirtualBattery, PriceData, QueryType
+from analysis.calculations import QueryType
+from analysis.pricedata import PriceData
+from analysis.virtualbattery import VirtualBattery
 from tests.mock_api_server import MockApiServer
 
 

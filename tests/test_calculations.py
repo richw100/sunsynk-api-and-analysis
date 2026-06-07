@@ -1,9 +1,10 @@
 import pytest
 from datetime import datetime
 
-from analysis.calculations import (
-    PriceData, VirtualBattery, EnergySummary, EnergySummaryAggregator, EnergyPrices, QueryType
-)
+from analysis.calculations import EnergySummary, EnergySummaryAggregator, QueryType
+from analysis.pricedata import PriceData
+from analysis.virtualbattery import VirtualBattery
+from analysis.energyprices import EnergyPrices
 
 
 def make_price_data(peak=0.30, offpeak=0.10, export=0.15, compare=0.25,
