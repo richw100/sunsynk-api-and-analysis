@@ -7,17 +7,15 @@ from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices
 
 
-def make_price_data(peak=0.30, offpeak=0.10, export=0.15, compare=0.25,
-                    standing=0.60, compare_standing=0.53,
+def make_price_data(peak=0.30, offpeak=0.10, export=0.15,
+                    standing=0.60,
                     offpeak_start="00:00", offpeak_stop="06:00",
                     interest_rate=3.7):
     pd = PriceData()
     pd.current_peak = peak
     pd.current_off_peak = offpeak
     pd.current_export = export
-    pd.compare_rate = compare
     pd.standing_charge = standing
-    pd.compare_standing_charge = compare_standing
     pd.current_off_peak_start = offpeak_start
     pd.current_off_peak_stop = offpeak_stop
     pd.interest_rate = interest_rate
@@ -210,15 +208,6 @@ def test_energy_summary_recalculate_total_cost():
     # total_cost = (peak_import_kWh * peak_rate) + (offpeak_import_kWh * offpeak_rate) + standing
     expected = (50 / 1000 * 0.30) + (45 / 1000 * 0.10) + 0.60
     assert summary.total_cost == pytest.approx(expected, rel=1e-6)
-
-
-def test_energy_summary_recalculate_compare_cost():
-    summary, _, _ = make_summary()
-    summary.add_data(make_day())
-    summary.recalculate()
-
-    expected = (95 / 1000 * 0.25) + 0.53
-    assert summary.compare_cost == pytest.approx(expected, rel=1e-6)
 
 
 def test_energy_summary_recalculate_export_amount():

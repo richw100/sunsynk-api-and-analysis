@@ -13,8 +13,6 @@ class PriceData:
     off_peak_average: float = 0.96
     current_export: float = 0.165
     standing_charge: float = 0.6
-    compare_standing_charge: float = 0.53
-    compare_rate: float = 0.25
     # £3.53 adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)
     original_price: float = 6210 - 3.53
     interest_rate: float = 3.7

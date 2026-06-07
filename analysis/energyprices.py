@@ -7,8 +7,10 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 
 
 class EnergyPrices:
-    def __init__(self, prices, battery: VirtualBattery, original_price: float = None):
+    def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
+                 label: str = ""):
         self.prices = prices
+        self.label = label
         self.aggregator = EnergySummaryAggregator()
         self.price_data = PriceData()
         self.original_price = original_price if original_price is not None else self.price_data.original_price
@@ -50,8 +52,6 @@ class EnergyPrices:
                     self.price_data.current_off_peak_start = item['offpeakStart']
                     self.price_data.current_off_peak_stop = item['offpeakStop']
                     self.price_data.standing_charge = float(item['standingCharge'])
-                    self.price_data.compare_standing_charge = float(item['CompareStandingCharge'])
-                    self.price_data.compare_rate = float(item['CompareRate'])
                     if 'InterestRate' in item:
                         self.price_data.interest_rate = float(item['InterestRate'])
                     self.price_data.current_start = new_start
@@ -76,7 +76,7 @@ class EnergyPrices:
             self.grand_totals = self.aggregator.get_grand_totals()
         return self.grand_totals
 
-    def _derive(self):
+    def get_derived(self):
         t = self.get_grand_totals()
         seg = t['total_export_amount_calc']
         op_excess_savings = t['total_off_peak_excess_savings']
@@ -84,19 +84,13 @@ class EnergyPrices:
         def pct(amount):
             return round(amount * 100 / self.original_price, 2)
 
-        bill_savings            = round(t['total_cost_without_solar'] - t['total_cost'], 2)
-        bill_savings_inc_seg    = round(bill_savings + seg, 2)
+        bill_savings         = round(t['total_cost_without_solar'] - t['total_cost'], 2)
+        bill_savings_inc_seg = round(bill_savings + seg, 2)
 
-        compare_savings             = round(t['compare_cost'] - t['total_cost'], 2)
-        compare_savings_inc_seg     = round(compare_savings + seg, 2)
-
-        solar_vs_compare            = round(t['compare_cost_without_solar'] - t['total_cost'], 2)
-        solar_vs_compare_inc_seg    = round(solar_vs_compare + seg, 2)
-
-        calc_savings                = round(t['total_savings_calc'] + op_excess_savings, 2)
-        calc_savings_exc_seg        = round(calc_savings - seg, 2)
-        supplied_savings            = round(t['total_savings_supplied'] + op_excess_savings, 2)
-        supplied_savings_exc_seg    = round(supplied_savings - t['total_export_amount_supplied'], 2)
+        calc_savings             = round(t['total_savings_calc'] + op_excess_savings, 2)
+        calc_savings_exc_seg     = round(calc_savings - seg, 2)
+        supplied_savings         = round(t['total_savings_supplied'] + op_excess_savings, 2)
+        supplied_savings_exc_seg = round(supplied_savings - t['total_export_amount_supplied'], 2)
 
         battery_savings = round(
             t['battery_nominal_cost'] + t['battery_export_cost']
@@ -108,12 +102,6 @@ class EnergyPrices:
             "seg": seg,
             "bill_savings": bill_savings,
             "bill_savings_inc_seg": bill_savings_inc_seg,
-            "compare_savings": compare_savings,
-            "compare_savings_inc_seg": compare_savings_inc_seg,
-            "compare_savings_pct": pct(compare_savings_inc_seg),
-            "solar_vs_compare": solar_vs_compare,
-            "solar_vs_compare_inc_seg": solar_vs_compare_inc_seg,
-            "solar_vs_compare_pct": pct(solar_vs_compare_inc_seg),
             "calc_savings": calc_savings,
             "calc_savings_exc_seg": calc_savings_exc_seg,
             "supplied_savings": supplied_savings,
@@ -124,27 +112,23 @@ class EnergyPrices:
         }
 
     def print_costs(self):
-        d = self._derive()
+        d = self.get_derived()
         t = d['t']
         print("")
         print("ENERGY COSTS")
         print(f"Total Cost of Energy: £{t['total_cost']}. With SEG: £{round(t['total_cost'] - d['seg'], 2)}")
         print(f"SEG income: £{d['seg']}")
         print(f"Total Cost of Energy without Solar: £{t['total_cost_without_solar']}")
-        print(f"Compare Rate Cost of Energy: £{t['compare_cost']}")
-        print(f"Compare Rate Cost of Energy without Solar: £{t['compare_cost_without_solar']}")
         print("")
 
     def print_savings(self):
-        d = self._derive()
+        d = self.get_derived()
         print("")
         print(f"Solar savings excl. export: Calculated £{d['calc_savings_exc_seg']}. Supplied £{d['supplied_savings_exc_seg']}")
-        print("")
-        print(f"Savings compared to compare rate: £{d['compare_savings']}. With SEG: £{d['compare_savings_inc_seg']} ({d['compare_savings_pct']}%)")
-        print(f"Full solar value vs compare rate: £{d['solar_vs_compare']}. With SEG: £{d['solar_vs_compare_inc_seg']} ({d['solar_vs_compare_pct']}%)")
+        print(f"Solar savings incl. SEG:    Calculated £{d['bill_savings_inc_seg']}")
 
     def print_return_on_investment(self):
-        d = self._derive()
+        d = self.get_derived()
         t = d['t']
         print("\r\nRETURN ON INVESTMENT")
         print(f"Calculated: £{t['total_savings_calc']} ({d['calc_roi_pct']}%). Supplied: £{t['total_savings_supplied']} ({d['supplied_roi_pct']}%)")
@@ -180,7 +164,7 @@ class EnergyPrices:
         print(f"Offpeak Total: {t['total_calc_import_off_peak']}kWh. Expected Excess: {t['total_off_peak_excess']}kWh. Savings: £{t['total_off_peak_excess_savings']}")
 
     def print_battery(self):
-        d = self._derive()
+        d = self.get_derived()
         t = d['t']
         days = t['days']
         if days > 0:

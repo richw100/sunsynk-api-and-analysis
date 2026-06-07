@@ -114,7 +114,7 @@ def _print_usage():
     print("General options:")
     print("  config:path.json        Config file to load (default: config.json)")
     print("  showDays:ON|OFF         Print per-day output")
-    print("  energyPrices:file.json  Energy prices file in inverterData/")
+    print("  energyPrices:file.json  Energy prices file in inverterData/ (or list in config)")
     print("  startDate:YYYY-MM-DD    Process days after this date")
     print("  stopDate:YYYY-MM-DD     Stop processing after this date")
     print("  scanFromYear:YYYY       First year to scan for data")
@@ -132,6 +132,53 @@ def _print_usage():
     print("  maxOutputW:N            Maximum battery output in watts (e.g. 2400)")
 
 
+def _make_battery(settings, price_data):
+    vb = settings['virtualBattery']
+    return VirtualBattery(
+        price_data,
+        int(settings['batterySize']),
+        1 if re.match('^on', str(settings['usePV']), re.IGNORECASE) else 0,
+        int(settings['startCharge']),
+        int(settings['stopCharge']),
+        export_window_start=settings['exportWindowStart'],
+        export_window_stop=settings['exportWindowStop'],
+        discharge_efficiency=float(vb['dischargeEfficiency']),
+        pv_charge_efficiency=float(vb['pvChargeEfficiency']),
+        max_output_w=float(vb['maxOutputW']),
+    )
+
+
+def _print_comparison(all_prices):
+    labels = [p.label for p in all_prices]
+    derived = [p.get_derived() for p in all_prices]
+    totals = [p.get_grand_totals() for p in all_prices]
+
+    col_w = max(14, max(len(l) for l in labels) + 2)
+    row_w = 32
+    show_diff = len(all_prices) == 2
+
+    header = " " * row_w + "".join(l.rjust(col_w) for l in labels)
+    if show_diff:
+        header += "Difference".rjust(col_w)
+
+    def row(name, values):
+        line = name.ljust(row_w) + "".join(f"£{v:.2f}".rjust(col_w) for v in values)
+        if show_diff:
+            diff = round(values[1] - values[0], 2)
+            sign = "+" if diff > 0 else ""
+            line += f"{sign}£{diff:.2f}".rjust(col_w)
+        print(line)
+
+    print("\nCOMPARISON")
+    print(header)
+    row("Total Cost:",               [t['total_cost'] for t in totals])
+    row("Total Cost (no solar):",    [t['total_cost_without_solar'] for t in totals])
+    row("SEG Income:",               [t['total_export_amount_calc'] for t in totals])
+    row("Bill savings (inc SEG):",   [d['bill_savings_inc_seg'] for d in derived])
+    row("Full solar savings:",       [d['calc_savings'] for d in derived])
+    row("Battery potential saving:", [d['battery_savings'] for d in derived])
+
+
 async def main():
     if '--help' in sys.argv or '-h' in sys.argv:
         _print_usage()
@@ -143,28 +190,36 @@ async def main():
     settings = _load_settings(sys.argv[1:])
 
     show_days = bool(re.match('^on', str(settings['showDays']), re.IGNORECASE))
-    battery_size = int(settings['batterySize'])
-    use_pv = 1 if re.match('^on', str(settings['usePV']), re.IGNORECASE) else 0
-    start_charge = int(settings['startCharge'])
-    stop_charge = int(settings['stopCharge'])
-    energy_prices_file = settings['energyPrices']
     start_date = str(settings['startDate'])
     stop_date = str(settings['stopDate'])
     scan_from_year = int(settings['scanFromYear'])
     original_price = float(settings['originalPrice'])
-    export_window_start = settings['exportWindowStart']
-    export_window_stop = settings['exportWindowStop']
-    vb = settings['virtualBattery']
-    discharge_efficiency = float(vb['dischargeEfficiency'])
-    pv_charge_efficiency = float(vb['pvChargeEfficiency'])
-    max_output_w = float(vb['maxOutputW'])
-    process_date = not start_date
 
+    # energyPrices can be a single filename string or a list of filenames
+    raw_files = settings['energyPrices']
+    energy_prices_files = raw_files if isinstance(raw_files, list) else [raw_files]
+
+    vb = settings['virtualBattery']
     print(f"Username: {sunsynk_username}")
-    print(f"showDays:{settings['showDays']}  energyPrices:{energy_prices_file}  startDate:{start_date or '(all)'}  stopDate:{stop_date or '(all)'}  scanFromYear:{scan_from_year}")
-    print(f"originalPrice:£{original_price}  exportWindow:{export_window_start}-{export_window_stop}")
-    print(f"Virtual battery: batterySize:{battery_size}  usePV:{settings['usePV']}  startCharge:{start_charge}  stopCharge:{stop_charge}")
-    print(f"                 dischargeEfficiency:{discharge_efficiency}  pvChargeEfficiency:{pv_charge_efficiency}  maxOutputW:{max_output_w}")
+    print(
+        f"showDays:{settings['showDays']}  "
+        f"energyPrices:{energy_prices_files}  "
+        f"startDate:{start_date or '(all)'}  "
+        f"stopDate:{stop_date or '(all)'}  "
+        f"scanFromYear:{scan_from_year}"
+    )
+    print(f"originalPrice:£{original_price}  exportWindow:{settings['exportWindowStart']}-{settings['exportWindowStop']}")
+    print(
+        f"Virtual battery: batterySize:{settings['batterySize']}  "
+        f"usePV:{settings['usePV']}  "
+        f"startCharge:{settings['startCharge']}  "
+        f"stopCharge:{settings['stopCharge']}"
+    )
+    print(
+        f"                 dischargeEfficiency:{vb['dischargeEfficiency']}  "
+        f"pvChargeEfficiency:{vb['pvChargeEfficiency']}  "
+        f"maxOutputW:{vb['maxOutputW']}"
+    )
 
     async with SunsynkEnergyClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net") as client:
         inverters = await client.get_inverters()
@@ -174,95 +229,100 @@ async def main():
             await client.get_inverter_realtime_input(inverter.sn)
             await client.get_inverter_realtime_output(inverter.sn)
 
-            prices_filename = "inverterData/" + energy_prices_file
+            all_prices = []
 
-            tmp_price = PriceData()
-            battery = VirtualBattery(
-                tmp_price, battery_size, use_pv, start_charge, stop_charge,
-                export_window_start=export_window_start,
-                export_window_stop=export_window_stop,
-                discharge_efficiency=discharge_efficiency,
-                pv_charge_efficiency=pv_charge_efficiency,
-                max_output_w=max_output_w,
-            )
+            for price_file in energy_prices_files:
+                prices_filename = "inverterData/" + price_file
 
-            energy_prices_data = None
+                try:
+                    with open(prices_filename, encoding='utf-8') as data_file:
+                        print(f"Loading: {prices_filename}")
+                        energy_prices_data = json.load(data_file)
+                except Exception as e:
+                    print(e)
+                    sys.exit(-1)
 
-            try:
-                with open(prices_filename) as data_file:
-                    print(f"Loading: {prices_filename}")
-                    energy_prices_data = json.load(data_file)
-            except Exception as e:
-                print(e)
-                exit(-1)
+                label = os.path.splitext(os.path.basename(price_file))[0]
+                tmp_price = PriceData()
+                battery = _make_battery(settings, tmp_price)
+                prices = EnergyPrices(energy_prices_data, battery,
+                                      original_price=original_price, label=label)
 
-            prices = EnergyPrices(energy_prices_data, battery, original_price=original_price)
+                current_month = datetime.today().strftime('%Y-%m')
+                total_months = (
+                    (int(current_month[:4]) - scan_from_year) * 12
+                    + int(current_month[5:7])
+                )
+                hasyear = True
+                yearcount = scan_from_year
+                process_date = not start_date
 
-            days = 0
-            current_month = datetime.today().strftime('%Y-%m')
-            total_months = (int(current_month[:4]) - scan_from_year) * 12 + int(current_month[5:7])
-            hasyear = True
-            yearcount = scan_from_year
-            with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
-                while hasyear and yearcount < 2040:
-                    hasyear = False
-                    count = 1
-                    while count < 13:
-                        monthtocheck = f'{yearcount}-{count:02d}'
-                        if monthtocheck > current_month:
-                            break
-                        pbar.set_description(monthtocheck)
-                        energymonth = await client.get_energy_month(inverter.plant.id, monthtocheck)
-                        pbar.update(1)
+                with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
+                    while hasyear and yearcount < 2040:
+                        hasyear = False
+                        count = 1
+                        while count < 13:
+                            monthtocheck = f'{yearcount}-{count:02d}'
+                            if monthtocheck > current_month:
+                                break
+                            pbar.set_description(monthtocheck)
+                            energymonth = await client.get_energy_month(inverter.plant.id, monthtocheck)
+                            pbar.update(1)
 
-                        items = energymonth.get_load()
+                            items = energymonth.get_load()
 
-                        if items is not None:
+                            if items is not None:
+                                for day in items['records']:
+                                    hasyear = True
+                                    prices.check_date(day['time'])
 
-                            for day in items['records']:
-                                hasyear = True
-                                prices.check_date(day['time'])
+                                    check_date = datetime.strptime(day['time'], "%Y-%m-%d")
+                                    if start_date:
+                                        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                                        if check_date > start_dt:
+                                            process_date = True
 
-                                check_date = datetime.strptime(day['time'], "%Y-%m-%d")
-                                if start_date:
-                                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                                    if check_date > start_dt:
-                                        process_date = True
+                                    if stop_date:
+                                        stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
+                                        if check_date > stop_dt:
+                                            process_date = False
 
-                                if stop_date:
-                                    stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
-                                    if check_date > stop_dt:
-                                        process_date = False
+                                    if process_date:
+                                        if show_days:
+                                            print(f"Calculating: {day['time']}")
 
-                                if process_date:
-                                    days += 1
+                                        energyday = await client.get_energy_day(
+                                            inverter.plant.id, day['time'], energymonth,
+                                            prices.battery,
+                                            prices.price_data.current_off_peak_start,
+                                            prices.price_data.current_off_peak_stop
+                                        )
+                                        prices.add_data(energyday)
 
-                                    if show_days:
-                                        print(f"Calculating: {day['time']}")
+                                        if show_days:
+                                            energyday.print()
 
-                                    energyday = await client.get_energy_day(
-                                        inverter.plant.id, day['time'], energymonth,
-                                        prices.battery,
-                                        prices.price_data.current_off_peak_start,
-                                        prices.price_data.current_off_peak_stop
-                                    )
-                                    prices.add_data(energyday)
+                            count += 1
+                        yearcount += 1
 
-                                    if show_days:
-                                        energyday.print()
+                prices.get_grand_totals()
+                all_prices.append(prices)
 
-                        count += 1
-                    yearcount += 1
+            for prices in all_prices:
+                if len(all_prices) > 1:
+                    print(f"\n{'─' * 60}")
+                    print(f"  {prices.label}")
+                    print('─' * 60)
+                prices.print_energy_summary()
+                prices.print_averages()
+                prices.print_costs()
+                prices.print_savings()
+                prices.print_return_on_investment()
+                prices.print_battery()
+                prices.print_totals()
 
-            prices.get_grand_totals()
-
-            prices.print_energy_summary()
-            prices.print_averages()
-            prices.print_costs()
-            prices.print_savings()
-            prices.print_return_on_investment()
-            prices.print_battery()
-            prices.print_totals()
+            if len(all_prices) > 1:
+                _print_comparison(all_prices)
 
 
 asyncio.run(main())

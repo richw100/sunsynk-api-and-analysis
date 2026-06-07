@@ -48,8 +48,6 @@ class EnergySummary:
         self.total_savings_supplied = 0
         self.total_cost = 0
         self.total_cost_without_solar = 0
-        self.compare_cost = 0
-        self.compare_cost_without_solar = 0
         self.remainder_input = remainder_input
 
         self.total_saved_in_period = remainder_input
@@ -118,10 +116,7 @@ class EnergySummary:
         self.off_peak_excess_savings = self.off_peak_excess * (self.price_data.current_peak - self.price_data.current_off_peak)
 
         standing_charge = self.days * self.price_data.standing_charge
-        compare_standing_charge = self.days * self.price_data.compare_standing_charge
 
-        self.compare_cost = (self.total_calc_import/1000 * self.price_data.compare_rate) + compare_standing_charge
-        self.compare_cost_without_solar = (self.total_calc_load/1000 * self.price_data.compare_rate) + compare_standing_charge
         self.total_cost = (
             (self.total_calc_import_peak/1000 * self.price_data.current_peak)
             + (self.total_calc_import_off_peak/1000 * self.price_data.current_off_peak)
@@ -168,8 +163,6 @@ class EnergySummaryAggregator:
             "total_savings_supplied": 0,
             "total_cost": 0,
             "total_cost_without_solar": 0,
-            "compare_cost": 0,
-            "compare_cost_without_solar": 0,
             "battery_cost_from_grid": 0,
             "battery_nominal_cost": 0,
             "battery_lost_export_cost": 0,
@@ -207,8 +200,6 @@ class EnergySummaryAggregator:
             totals["total_savings_supplied"] += summary.total_savings_supplied
             totals["total_cost"] += summary.total_cost
             totals["total_cost_without_solar"] += summary.total_cost_without_solar
-            totals["compare_cost"] += summary.compare_cost
-            totals["compare_cost_without_solar"] += summary.compare_cost_without_solar
             summary.battery.get_savings()
             totals["battery_cost_from_grid"] += summary.battery.cost_from_grid
             totals["battery_nominal_cost"] += summary.battery.nominal_cost
