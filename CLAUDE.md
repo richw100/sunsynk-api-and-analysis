@@ -46,11 +46,12 @@ Installed via `pip install sunsynk-api-client`. A thin async wrapper around the 
 - `runCollectData.sh` — Linux/Debian launcher; prompts for credentials if not already set as env vars (password prompt is silent). Run from any directory.
 - `runCollectData.bat` — Windows equivalent of the above.
 - `energy_client.py` — `SunsynkEnergyClient(SunsynkClient)`: subclass that adds `get_energy_day()`, `get_energy_month()`, and `_get_cached()` (local file caching of daily API responses to `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file exists and not caching the current day). Accesses the parent's private HTTP method via its mangled name `_SunsynkClient__get` — noted in the class docstring.
-- `energyday.py` — `EnergyDay` and `EnergyMonth`: parse the 5-minute interval timeseries from the plant energy endpoints.
+- `energymonth.py` — `EnergyMonth`: parses monthly daily kWh totals from the plant energy month endpoint (Load, PV, Export, Import labels).
+- `energyday.py` — `IntervalSummary` and `EnergyDay`: parse the 5-minute interval timeseries from the plant energy day endpoint. `IntervalSummary` accumulates peak/offpeak Wh totals for one label (PV, Grid, Load); named `IntervalSummary` to avoid a name clash with `calculations.py`'s `EnergySummary`.
 - `calculations.py` — the analysis engine:
   - `PriceData` — current energy tariff rates (off-peak/peak/export rates, standing charge, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.checkDate()`.
-  - `VirtualBattery` — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from `sunsynk/battery.py`'s `Battery` (the realtime API response model).
-  - `EnergySummary` — accumulates per-day data for a single tariff period; `newMonth()` compounds interest on cumulative savings.
+  - `VirtualBattery` — simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from the upstream `Battery` model (realtime API response).
+  - `EnergySummary` — accumulates per-day financial data for a single tariff period; `newMonth()` compounds interest on cumulative savings.
   - `EnergySummaryAggregator` — holds one `EnergySummary` per tariff period and computes cross-period grand totals.
   - `EnergyPrices` — top-level orchestrator; reads `_EnergyPrices.json`, calls `checkDate()` to switch tariff periods, and exposes `print_*` methods for the final report.
 
@@ -62,4 +63,7 @@ JSON files defining tariff periods with fields: `datefrom`, `dateto`, `offpeakRa
 
 ## Tests
 
-Tests use `pytest-asyncio` and `pytest-aiohttp`. The `MockApiServer` in `tests/mock_api_server.py` spins up a local aiohttp server that generates a real RSA key pair, serves it via `/anonymous/publicKey`, and verifies the encrypted password on login — matching the real API's auth flow. Tests are all async and use `aiohttp_client` + `event_loop` fixtures.
+Tests use `pytest-asyncio` and `pytest-aiohttp`. The `MockApiServer` in `tests/mock_api_server.py` spins up a local aiohttp server that generates a real RSA key pair, serves it via `/anonymous/publicKey`, and verifies the encrypted password on login — matching the real API's auth flow. It also serves `/api/v1/plant/energy/{plant_id}/month` and `/api/v1/plant/energy/{plant_id}/day` for energy endpoint tests. Tests are all async and use `aiohttp_client` + `event_loop` fixtures.
+
+- `tests/test_client.py` — integration tests for `SunsynkEnergyClient`: energy month/day fetching, caching, and battery simulation via the mock server.
+- `tests/test_calculations.py` — unit tests for `calculations.py`: `VirtualBattery`, `EnergySummary`, `EnergySummaryAggregator`, and `EnergyPrices`.
