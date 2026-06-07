@@ -26,9 +26,10 @@ export SUNSYNK_PASSWORD=...
 ./venv/bin/pytest tests/test_client.py::test_get_inverters
 
 # Run collectdata analysis (works from any directory)
-python analysis/collectdata.py [showDays:ON|OFF] [batterySizeW] [usePVToChargeBattery:ON|OFF] [startChargeW] [stopChargeW] [_EnergyPrices.json|DEFAULT] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD]
-# Linux/Debian: analysis/runCollectData.sh
-# Windows:      analysis\runCollectData.bat
+# Settings are loaded from config.json; any key:value arg overrides the file.
+python analysis/collectdata.py [config:path/to/config.json] [showDays:ON|OFF] [batterySize:N] [usePV:ON|OFF] [startCharge:N] [stopCharge:N] [energyPrices:file.json] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD]
+# Linux/Debian: analysis/runCollectData.sh [key:value ...]
+# Windows:      analysis\runCollectData.bat [key:value ...]
 ```
 
 ## Architecture
@@ -42,7 +43,7 @@ Installed via `pip install sunsynk-api-client`. A thin async wrapper around the 
 
 ### `analysis/` — our extensions and energy analysis engine
 
-- `collectdata.py` — standalone CLI script; iterates over all historical months/days and prints a financial analysis of the solar/battery installation. Can be run from any directory (`python analysis/collectdata.py ...` or `python3 collectdata.py ...` from within `analysis/`). It sets `PROJECT_ROOT` from `__file__` and calls `os.chdir(PROJECT_ROOT)` at startup so imports and `inverterData/` paths always resolve correctly.
+- `collectdata.py` — standalone CLI script; iterates over all historical months/days and prints a financial analysis of the solar/battery installation. Can be run from any directory (`python analysis/collectdata.py ...` or `python3 collectdata.py ...` from within `analysis/`). It sets `PROJECT_ROOT` from `__file__` and calls `os.chdir(PROJECT_ROOT)` at startup so imports and `inverterData/` paths always resolve correctly. Settings are loaded from `config.json` (project root) then overridden by any `key:value` CLI args; use `config:path.json` to load a different file.
 - `runCollectData.sh` — Linux/Debian launcher; prompts for credentials if not already set as env vars (password prompt is silent). Run from any directory.
 - `runCollectData.bat` — Windows equivalent of the above.
 - `energy_client.py` — `SunsynkEnergyClient(SunsynkClient)`: subclass that adds `get_energy_day()`, `get_energy_month()`, and `_get_cached()` (local file caching of daily API responses to `inverterData/day-YYYY-MM-DD.json`, skipping the API call if a file exists and not caching the current day). Accesses the parent's private HTTP method via its mangled name `_SunsynkClient__get` — noted in the class docstring.

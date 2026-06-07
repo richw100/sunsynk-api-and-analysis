@@ -1,0 +1,10 @@
+{
+    "showDays": "OFF",
+    "batterySize": 5000,
+    "usePV": "ON",
+    "startCharge": 2500,
+    "stopCharge": 5000,
+    "energyPrices": "_EnergyPrices.json",
+    "startDate": "",
+    "stopDate": ""
+}

@@ -12,4 +12,4 @@ if [ -z "$SUNSYNK_PASSWORD" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-"$SCRIPT_DIR/../venv/bin/python" "$SCRIPT_DIR/collectdata.py" Off 5000 on 2500 5000
+"$SCRIPT_DIR/../venv/bin/python" "$SCRIPT_DIR/collectdata.py" "$@"
