@@ -148,6 +148,7 @@ def _load_settings(argv):
         for key, value in vb_defaults.items():
             vb_raw.setdefault(key, value)
 
+    settings['_configPath'] = config_path
     return settings
 
 
@@ -523,6 +524,20 @@ async def main():
                 _print_comparison(all_battery_results[0][1])
 
     sys.stdout = sys.__stdout__
+
+    # Append raw config files to the results file only (not stdout)
+    _results_file.write(f"\n{'═' * 60}\nCONFIGURATION FILES\n{'═' * 60}\n")
+    config_files = [settings['_configPath']] + [
+        "inverterData/" + pf for pf in energy_prices_files
+    ]
+    for path in config_files:
+        _results_file.write(f"\n--- {path} ---\n")
+        try:
+            with open(path, encoding='utf-8') as _cf:
+                _results_file.write(_cf.read())
+        except Exception as _e:
+            _results_file.write(f"(could not read: {_e})\n")
+
     _results_file.close()
     print(f"Results saved: {_results_path}")
 
