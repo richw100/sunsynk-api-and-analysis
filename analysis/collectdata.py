@@ -12,7 +12,7 @@ from analysis.energy_client import SunsynkEnergyClient
 from analysis.energyday import EnergyDay
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
-from analysis.energyprices import EnergyPrices
+from analysis.energyprices import EnergyPrices, _battery_warnings
 
 from datetime import datetime
 from tqdm import tqdm
@@ -307,6 +307,21 @@ def _print_battery_comparison(all_battery_results, price_file_idx=0):
             diff = round(payback_values[1] - payback_values[0], 1)
             sign = "+" if diff > 0 else ""
             line += f"{sign}{diff:.1f}yr".rjust(col_w)
+        print(line)
+
+    def has_warnings(prices: EnergyPrices) -> bool:
+        for summary in prices.aggregator.summaries:
+            if _battery_warnings(prices.orig_battery, summary.price_data):
+                return True
+        return False
+
+    warn_flags = [has_warnings(p) for p in prices_list]
+    if any(warn_flags):
+        line = "Warnings:".ljust(row_w) + "".join(
+            "WARNING".rjust(col_w) if w else "".rjust(col_w) for w in warn_flags
+        )
+        if show_diff:
+            line += "".rjust(col_w)
         print(line)
 
 
