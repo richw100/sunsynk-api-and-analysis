@@ -18,6 +18,20 @@ from datetime import datetime
 from tqdm import tqdm
 
 
+class _Tee:
+    """Write to multiple streams simultaneously (stdout + results file)."""
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+
 def _parse_cli_args(argv):
     """Parse key:value CLI args. Returns (config_path, overrides_dict)."""
     config_path = 'config.json'
@@ -292,6 +306,13 @@ async def main():
         _print_usage()
         return
 
+    results_dir = os.path.join(PROJECT_ROOT, 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    _timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    _results_path = os.path.join(results_dir, f'_{_timestamp}-result.txt')
+    _results_file = open(_results_path, 'w', encoding='utf-8')
+    sys.stdout = _Tee(sys.__stdout__, _results_file)
+
     sunsynk_username = os.getenv('SUNSYNK_USERNAME')
     sunsynk_password = os.getenv('SUNSYNK_PASSWORD')
 
@@ -494,6 +515,10 @@ async def main():
 
             if len(energy_prices_files) > 1:
                 _print_comparison(all_battery_results[0][1])
+
+    sys.stdout = sys.__stdout__
+    _results_file.close()
+    print(f"Results saved: {_results_path}")
 
 
 asyncio.run(main())
