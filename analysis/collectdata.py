@@ -85,6 +85,8 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['enabled'] = value
         elif key_lower == 'batteryprice':
             overrides.setdefault('virtualBattery', {})['batteryPrice'] = float(value)
+        elif key_lower == 'description':
+            overrides['description'] = value
     return config_path, overrides
 
 
@@ -112,6 +114,7 @@ def _load_settings(argv):
         'originalPrice': 6206.47,
         'offPeakShift': 'ON',
         'offPeakBaseline': 0.96,
+        'description': '',
         'virtualBattery': {
             'enabled': 'ON',
             'batterySize': 5000,
@@ -154,6 +157,7 @@ def _print_usage():
     print("General options:")
     print("  config:path.json        Config file to load (default: config.json)")
     print("  showDays:ON|OFF         Print per-day output")
+    print("  description:text        Appended to the results filename, e.g. description:2.6kWh-test")
     print("  energyPrices:file.json  Energy prices file in inverterData/ (or list in config)")
     print("  startDate:YYYY-MM-DD    Process days after this date")
     print("  stopDate:YYYY-MM-DD     Stop processing after this date")
@@ -306,17 +310,19 @@ async def main():
         _print_usage()
         return
 
-    results_dir = os.path.join(PROJECT_ROOT, 'results')
-    os.makedirs(results_dir, exist_ok=True)
-    _timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    _results_path = os.path.join(results_dir, f'_{_timestamp}-result.txt')
-    _results_file = open(_results_path, 'w', encoding='utf-8')
-    sys.stdout = _Tee(sys.__stdout__, _results_file)
-
     sunsynk_username = os.getenv('SUNSYNK_USERNAME')
     sunsynk_password = os.getenv('SUNSYNK_PASSWORD')
 
     settings = _load_settings(sys.argv[1:])
+
+    results_dir = os.path.join(PROJECT_ROOT, 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    _timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    _desc = re.sub(r'[^\w\-]', '_', str(settings['description'])).strip('_')
+    _suffix = f'-{_desc}' if _desc else ''
+    _results_path = os.path.join(results_dir, f'_{_timestamp}{_suffix}-result.txt')
+    _results_file = open(_results_path, 'w', encoding='utf-8')
+    sys.stdout = _Tee(sys.__stdout__, _results_file)
 
     show_days = bool(re.match('^on', str(settings['showDays']), re.IGNORECASE))
     start_date = str(settings['startDate'])
