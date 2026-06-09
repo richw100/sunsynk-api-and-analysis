@@ -385,10 +385,14 @@ async def main():
             all_battery_results = []  # list of (label, list[EnergyPrices])
 
             # Raw data caches: populated on the first battery×price pass, reused on all others.
-            # EnergyMonth objects are battery- and tariff-independent so safe to cache as-is.
-            # Day data is cached as raw dicts; EnergyDay is recreated per pass (battery-stateful).
-            _month_cache: dict = {}   # monthtocheck → EnergyMonth
-            _day_raw_cache: dict = {}  # date_str → raw day dict
+            # EnergyMonth and EnergyDay (parse-only, no battery) are tariff-window-keyed and
+            # shared across all battery configs. Battery simulation is replayed per config using
+            # pre-parsed interval tuples stored in the EnergyDay, eliminating all strptime overhead.
+            _month_cache: dict = {}      # monthtocheck → EnergyMonth
+            _day_raw_cache: dict = {}    # date_str → raw day dict
+            _energyday_cache: dict = {}  # f"{date}|{opstart}|{opstop}" → parse-only EnergyDay
+            _cache_misses = 0
+            _cache_hits = 0
 
             for battery_config in battery_configs:
                 bc_label = battery_config.get('label', '')
@@ -477,17 +481,26 @@ async def main():
                                             if show_days:
                                                 print(f"Calculating: {day['time']}")
 
-                                            if day['time'] not in _day_raw_cache:
-                                                _day_raw_cache[day['time']] = await client.get_energy_day_raw(
-                                                    inverter.plant.id, day['time']
+                                            offpeakstart = prices.price_data.current_off_peak_start
+                                            offpeakstop = prices.price_data.current_off_peak_stop
+                                            ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}"
+
+                                            if ed_key not in _energyday_cache:
+                                                if day['time'] not in _day_raw_cache:
+                                                    _cache_misses += 1
+                                                    _day_raw_cache[day['time']] = await client.get_energy_day_raw(
+                                                        inverter.plant.id, day['time']
+                                                    )
+                                                _energyday_cache[ed_key] = EnergyDay(
+                                                    _day_raw_cache[day['time']]['data'],
+                                                    day['time'], energymonth,
+                                                    None, offpeakstart, offpeakstop
                                                 )
-                                            energyday = EnergyDay(
-                                                _day_raw_cache[day['time']]['data'],
-                                                day['time'], energymonth,
-                                                prices.battery,
-                                                prices.price_data.current_off_peak_start,
-                                                prices.price_data.current_off_peak_stop
-                                            )
+                                            else:
+                                                _cache_hits += 1
+
+                                            energyday = _energyday_cache[ed_key]
+                                            energyday.run_battery(prices.battery)
                                             prices.add_data(energyday)
 
                                             if show_days:
@@ -500,6 +513,8 @@ async def main():
                     all_prices.append(prices)
 
                 all_battery_results.append((bc_label, all_prices))
+
+            print(f"[cache] day files: {_cache_misses} loaded from disk, {_cache_hits} served from memory cache")
 
             # Print results: solar/tariff output once (first battery config), battery per config
             first_battery = True

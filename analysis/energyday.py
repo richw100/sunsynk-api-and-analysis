@@ -9,7 +9,7 @@ from analysis.energymonth import EnergyMonth
 class IntervalSummary(Resource):
     """Accumulates peak/offpeak Wh totals from 5-minute interval records for one label."""
 
-    def __init__(self, data, battery: VirtualBattery,
+    def __init__(self, data, battery: VirtualBattery = None,
                  offpeakstart="00:00", offpeakstop="00:07", is_load: bool = False):
         self.label = data['label']
         self.records = data['records']
@@ -23,16 +23,21 @@ class IntervalSummary(Resource):
         stop = datetime.strptime(offpeakstop, "%H:%M")
         recharged = False
         battery_ran_out = False
+        # Pre-parsed (time_dt, wh) tuples stored for Grid records (is_load=True) so
+        # battery simulation can be replayed cheaply without re-parsing strings.
+        self._parsed: list = [] if is_load else None
 
         for record in self.records:
             time = datetime.strptime(record['time'], "%H:%M")
             value = float(record['value']) / 12
+            if is_load:
+                self._parsed.append((time, value))
             if start <= time < stop:
                 recharged = self._process_offpeak_record(value, battery, is_load, recharged)
             else:
                 battery_ran_out = self._process_peak_record(value, time, battery, is_load) or battery_ran_out
 
-        if battery_ran_out:
+        if battery is not None and battery_ran_out:
             battery.set_ran_out()
 
         if self.offpeak + self.peak > 0:
@@ -40,7 +45,7 @@ class IntervalSummary(Resource):
 
     def _process_offpeak_record(self, value, battery: VirtualBattery, is_load: bool, recharged: bool) -> bool:
         if not recharged:
-            if is_load:
+            if battery is not None and is_load:
                 battery.recharge()
             recharged = True
         if value > 0:
@@ -54,14 +59,14 @@ class IntervalSummary(Resource):
     def _process_peak_record(self, value, time, battery: VirtualBattery, is_load: bool) -> bool:
         if value > 0:
             self.peak += value
-            if is_load:
+            if battery is not None and is_load:
                 return battery.utilise(value, time) > 0
         else:
             extra_load = min(-value, 2.3)
             export = -value - extra_load
             self.peakexport += export
             self.peak -= extra_load
-            if is_load:
+            if battery is not None and is_load:
                 battery.pv_charge(export, time)
         return False
 
@@ -71,6 +76,8 @@ class EnergyDay(Resource):
                  offpeakstart: str, offpeakstop: str):
         self.data = data
         energy = self.data['infos']
+        self._start_dt = datetime.strptime(offpeakstart, "%H:%M")
+        self._stop_dt = datetime.strptime(offpeakstop, "%H:%M")
         for item in energy:
             if item['label'] == "PV":
                 self.pv = IntervalSummary(item, battery, offpeakstart, offpeakstop)
@@ -83,6 +90,25 @@ class EnergyDay(Resource):
         self.supplied_import = next((float(r['value']) for r in month.get_import()['records'] if r['time'] == date), 0.0)
         self.supplied_pv = next((float(r['value']) for r in month.get_pv()['records'] if r['time'] == date), 0.0)
         self.supplied_export = next((float(r['value']) for r in month.get_export()['records'] if r['time'] == date), 0.0)
+
+    def run_battery(self, battery: VirtualBattery):
+        """Replay battery simulation over pre-parsed Grid intervals (no string parsing)."""
+        recharged = False
+        battery_ran_out = False
+        for time_dt, wh in self.grid._parsed:
+            if self._start_dt <= time_dt < self._stop_dt:
+                if not recharged:
+                    battery.recharge()
+                    recharged = True
+            else:
+                if wh > 0:
+                    if battery.utilise(wh, time_dt) > 0:
+                        battery_ran_out = True
+                else:
+                    extra_load = min(-wh, 2.3)
+                    battery.pv_charge(-wh - extra_load, time_dt)
+        if battery_ran_out:
+            battery.set_ran_out()
 
     def get_calc_export(self, qtype: QueryType = QueryType.BOTH):
         if qtype == QueryType.BOTH:
