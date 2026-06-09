@@ -19,18 +19,25 @@ class SunsynkEnergyClient(SunsynkClient):
         self._today = datetime.today().strftime('%Y-%m-%d')
 
     async def get_energy_month(self, plant_id: str, date: str) -> EnergyMonth:
-        body = await self._get_cached(
+        return EnergyMonth((await self.get_energy_month_raw(plant_id, date))['data'])
+
+    async def get_energy_month_raw(self, plant_id: str, date: str) -> dict:
+        return await self._get_cached(
             f'api/v1/plant/energy/{plant_id}/month?lan=en&date={date}&id={plant_id}',
             'month', date[:7]
         )
-        return EnergyMonth(body['data'])
 
     async def get_energy_day(self, plant_id: str, date: str, month: EnergyMonth,
                              battery: VirtualBattery, offpeakstart: str, offpeakstop: str) -> EnergyDay:
-        body = await self._get_cached(
+        return EnergyDay(
+            (await self.get_energy_day_raw(plant_id, date))['data'],
+            date, month, battery, offpeakstart, offpeakstop
+        )
+
+    async def get_energy_day_raw(self, plant_id: str, date: str) -> dict:
+        return await self._get_cached(
             f'api/v1/plant/energy/{plant_id}/day?lan=en&date={date}&id={plant_id}', 'day', date
         )
-        return EnergyDay(body['data'], date, month, battery, offpeakstart, offpeakstop)
 
     async def _get_cached(self, path: str, req_type: str, date: str):
         try:

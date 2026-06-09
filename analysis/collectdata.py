@@ -9,7 +9,7 @@ sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
 from analysis.energy_client import SunsynkEnergyClient
-
+from analysis.energyday import EnergyDay
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices
@@ -384,6 +384,12 @@ async def main():
 
             all_battery_results = []  # list of (label, list[EnergyPrices])
 
+            # Raw data caches: populated on the first battery×price pass, reused on all others.
+            # EnergyMonth objects are battery- and tariff-independent so safe to cache as-is.
+            # Day data is cached as raw dicts; EnergyDay is recreated per pass (battery-stateful).
+            _month_cache: dict = {}   # monthtocheck → EnergyMonth
+            _day_raw_cache: dict = {}  # date_str → raw day dict
+
             for battery_config in battery_configs:
                 bc_label = battery_config.get('label', '')
                 if not bc_label and multi_battery:
@@ -442,7 +448,11 @@ async def main():
                                 if monthtocheck > current_month:
                                     break
                                 pbar.set_description(monthtocheck)
-                                energymonth = await client.get_energy_month(inverter.plant.id, monthtocheck)
+                                if monthtocheck not in _month_cache:
+                                    _month_cache[monthtocheck] = await client.get_energy_month(
+                                        inverter.plant.id, monthtocheck
+                                    )
+                                energymonth = _month_cache[monthtocheck]
                                 pbar.update(1)
 
                                 items = energymonth.get_load()
@@ -467,8 +477,13 @@ async def main():
                                             if show_days:
                                                 print(f"Calculating: {day['time']}")
 
-                                            energyday = await client.get_energy_day(
-                                                inverter.plant.id, day['time'], energymonth,
+                                            if day['time'] not in _day_raw_cache:
+                                                _day_raw_cache[day['time']] = await client.get_energy_day_raw(
+                                                    inverter.plant.id, day['time']
+                                                )
+                                            energyday = EnergyDay(
+                                                _day_raw_cache[day['time']]['data'],
+                                                day['time'], energymonth,
                                                 prices.battery,
                                                 prices.price_data.current_off_peak_start,
                                                 prices.price_data.current_off_peak_stop
