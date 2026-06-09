@@ -9,12 +9,14 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 class EnergyPrices:
     def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
                  label: str = "", off_peak_baseline_kwh: float = 0.96,
-                 off_peak_shift_enabled: bool = True, battery_enabled: bool = True):
+                 off_peak_shift_enabled: bool = True, battery_enabled: bool = True,
+                 battery_price: float = 0.0):
         self.prices = prices
         self.label = label
         self._off_peak_baseline_kwh = off_peak_baseline_kwh
         self.off_peak_shift_enabled = off_peak_shift_enabled
         self.battery_enabled = battery_enabled
+        self.battery_price = battery_price
         self.aggregator = EnergySummaryAggregator()
         self.price_data = PriceData()
         self.price_data.off_peak_baseline_kwh = off_peak_baseline_kwh
@@ -105,6 +107,13 @@ class EnergyPrices:
             - t['battery_cost_from_grid'] - t['battery_lost_export_cost'], 2
         ) if self.battery_enabled else 0
 
+        days = t['days']
+        annualised_battery = round(365 * battery_savings / days, 2) if days > 0 else 0
+        if self.battery_price > 0 and annualised_battery > 0:
+            payback_years = round(self.battery_price / annualised_battery, 1)
+        else:
+            payback_years = None
+
         return {
             "t": t,
             "seg": seg,
@@ -117,6 +126,8 @@ class EnergyPrices:
             "calc_roi_pct": pct(t['total_savings_calc']),
             "supplied_roi_pct": pct(t['total_savings_supplied']),
             "battery_savings": battery_savings,
+            "annualised_battery": annualised_battery,
+            "payback_years": payback_years,
         }
 
     def print_costs(self):
@@ -208,4 +219,9 @@ class EnergyPrices:
             print(f"  Net potential saving:                       £{d['battery_savings']}")
             print(f"    = peak saving £{t['battery_nominal_cost']} + export £{t['battery_export_cost']}"
                   f" − charging cost £{t['battery_cost_from_grid']} − foregone export £{t['battery_lost_export_cost']}")
-            print(f"  Per day: £{round(d['battery_savings']/days, 2)}   Annualised: £{round(365 * d['battery_savings']/days, 2)}")
+            print(f"  Per day: £{round(d['battery_savings']/days, 2)}   Annualised: £{d['annualised_battery']}")
+            if self.battery_price > 0:
+                if d['payback_years'] is not None:
+                    print(f"  Battery cost: £{self.battery_price:.2f}   Payback period: {d['payback_years']} years")
+                else:
+                    print(f"  Battery cost: £{self.battery_price:.2f}   Payback period: N/A")

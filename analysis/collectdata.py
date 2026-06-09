@@ -69,6 +69,8 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['chargeEfficiency'] = float(value)
         elif key_lower == 'usebattery':
             overrides.setdefault('virtualBattery', {})['enabled'] = value
+        elif key_lower == 'batteryprice':
+            overrides.setdefault('virtualBattery', {})['batteryPrice'] = float(value)
     return config_path, overrides
 
 
@@ -109,6 +111,7 @@ def _load_settings(argv):
             'pvChargeEfficiency': 0.96,
             'maxOutputW': 2400,
             'chargeEfficiency': 1.0,
+            'batteryPrice': 0,
         },
     }
     for key, value in defaults.items():
@@ -147,6 +150,7 @@ def _print_usage():
     print("")
     print("Virtual battery options:")
     print("  useBattery:ON|OFF       Enable virtual battery simulation (default: ON)")
+    print("  batteryPrice:N          Battery purchase cost in £ (for payback period calculation)")
     print("  batterySize:N           Battery capacity in Wh")
     print("  usePV:ON|OFF            Charge battery from PV surplus")
     print("  startCharge:N           PV charging starts below this level (Wh)")
@@ -267,7 +271,20 @@ def _print_battery_comparison(all_battery_results, price_file_idx=0):
     row_int("Days battery ran out:", [t['battery_days_run_out'] for t in totals])
     row_money("Net potential saving:", [d['battery_savings'] for d in derived])
     if days > 0:
-        row_money("Annualised:", [round(365 * d['battery_savings'] / days, 2) for d in derived])
+        row_money("Annualised:", [d['annualised_battery'] for d in derived])
+
+    if any(p.battery_price > 0 for p in prices_list):
+        payback_values = [d['payback_years'] for d in derived]
+        line = "Payback period (years):".ljust(row_w)
+        line += "".join(
+            (f"{v:.1f}yr" if v is not None else "N/A").rjust(col_w)
+            for v in payback_values
+        )
+        if show_diff and payback_values[0] is not None and payback_values[1] is not None:
+            diff = round(payback_values[1] - payback_values[0], 1)
+            sign = "+" if diff > 0 else ""
+            line += f"{sign}{diff:.1f}yr".rjust(col_w)
+        print(line)
 
 
 async def main():
@@ -376,6 +393,7 @@ async def main():
                         off_peak_baseline_kwh=float(settings['offPeakBaseline']),
                         off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
                         battery_enabled=battery_enabled,
+                        battery_price=float(battery_config['batteryPrice']),
                     )
 
                     current_month = datetime.today().strftime('%Y-%m')

@@ -61,6 +61,7 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | Argument | Values | Description |
 |---|---|---|
 | `useBattery:` | `ON`\|`OFF` | Enable virtual battery simulation (default: `ON`) |
+| `batteryPrice:` | number (£) | Battery purchase cost — used to calculate payback period |
 | `batterySize:` | integer (Wh) | Battery capacity |
 | `usePV:` | `ON`\|`OFF` | Charge battery from PV surplus |
 | `startCharge:` | integer (Wh) | Begin PV charging when battery falls below this level |
@@ -190,6 +191,7 @@ Models the financial benefit of a battery that is fully charged from the grid ea
 - **Days battery ran out before peak demand met**: days where the battery was exhausted mid-peak and the shortfall had to be drawn from the grid at full price.
 - **Net potential saving**: `peak saving + export income − charging cost − foregone export income`. The formula is shown on the following line.
 - **Per day / Annualised**: net potential saving expressed as a daily rate and extrapolated to a full year.
+- **Battery cost / Payback period**: shown when `batteryPrice` is set. Payback = `batteryPrice ÷ annualised saving`.
 
 ---
 
@@ -211,6 +213,7 @@ When `virtualBattery` is a list, each battery config runs its own simulation aga
 - **Days battery ran out**: days where the battery was exhausted before peak demand was met
 - **Net potential saving**: peak saving + export income − charging cost − foregone export
 - **Annualised**: net potential saving extrapolated to a full year
+- **Payback period (years)**: `batteryPrice ÷ annualised saving`, shown when `batteryPrice` is set for at least one config
 
 When exactly two configs are provided, a `Difference` column shows the change from the first to the second.
 

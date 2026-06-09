@@ -58,7 +58,7 @@ Installed via `pip install sunsynk-api-client`. A thin async wrapper around the 
 - `energysummary.py` — `QueryType` enum, `EnergySummary`, and `EnergySummaryAggregator`:
   - `EnergySummary` — accumulates per-day financial data for a single tariff period; `new_month()` compounds interest on cumulative savings. Computes `off_peak_average` from `price_data.off_peak_baseline_kwh` scaled to the actual window length.
   - `EnergySummaryAggregator` — holds one `EnergySummary` per tariff period and computes cross-period grand totals.
-- `energyprices.py` — `EnergyPrices`: top-level orchestrator; reads one or more `_EnergyPrices*.json` files (supports multi-file tariff comparison), calls `check_date()` to switch tariff periods, and exposes `print_*` methods for the final report. Constructor params: `off_peak_baseline_kwh`, `off_peak_shift_enabled` (include off-peak load-shifting in savings), `battery_enabled` (show/include virtual battery section).
+- `energyprices.py` — `EnergyPrices`: top-level orchestrator; reads one or more `_EnergyPrices*.json` files (supports multi-file tariff comparison), calls `check_date()` to switch tariff periods, and exposes `print_*` methods for the final report. Constructor params: `off_peak_baseline_kwh`, `off_peak_shift_enabled` (include off-peak load-shifting in savings), `battery_enabled` (show/include virtual battery section), `battery_price` (£ cost of battery; triggers payback-period display in `print_battery()` and comparison table).
 
 Import chain (no cycles): `pricedata` → `virtualbattery` → `energysummary` → `energyprices`.
 
