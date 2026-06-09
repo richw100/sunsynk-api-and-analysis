@@ -81,6 +81,8 @@ class EnergyPrices:
             use_export=self.orig_battery.export == 1,
             charge_efficiency=self.orig_battery.charge_efficiency,
             grid_charge=self.orig_battery.grid_charge,
+            discharge_reserve_wh=self.orig_battery.discharge_reserve_wh,
+            discharge_reserve_until=self.orig_battery.discharge_reserve_until_str,
         )
 
     def check_date(self, date_in: str):

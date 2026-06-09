@@ -8,7 +8,8 @@ class VirtualBattery:
                  start_charging=1000, stop_charging=2000,
                  export_window_start="17:00", export_window_stop="19:00",
                  discharge_efficiency=0.92, pv_charge_efficiency=0.96, max_output_w=2400,
-                 use_export=False, charge_efficiency=1.0, grid_charge=True):
+                 use_export=False, charge_efficiency=1.0, grid_charge=True,
+                 discharge_reserve_wh=0, discharge_reserve_until="17:00"):
         self.battery_size = battery_size
         self.battery_status = battery_size
         self.charge_amount = 0
@@ -40,6 +41,9 @@ class VirtualBattery:
         self.discharge_efficiency = discharge_efficiency
         self.pv_charge_efficiency = pv_charge_efficiency
         self.max_output_w = max_output_w
+        self.discharge_reserve_wh = discharge_reserve_wh
+        self.discharge_reserve_until_str = discharge_reserve_until
+        self.discharge_reserve_until = datetime.strptime(discharge_reserve_until, "%H:%M")
 
         # Number of 5-minute intervals in the export window
         window_seconds = (self.export_stop - self.export_start).total_seconds()
@@ -71,14 +75,18 @@ class VirtualBattery:
 
         # Cap demand by max inverter output per 5-minute interval
         actual_output = min(value, self.max_output_w / 12)
-        # Energy deliverable from current battery charge
-        deliverable = self.battery_status * self.discharge_efficiency
+        # Hold back reserve until cutover time
+        if self.discharge_reserve_wh > 0 and time < self.discharge_reserve_until:
+            available_charge = max(0, self.battery_status - self.discharge_reserve_wh)
+        else:
+            available_charge = self.battery_status
+        deliverable = available_charge * self.discharge_efficiency
 
         if actual_output > deliverable:
-            # Battery exhausted before meeting demand
+            # Battery exhausted (or reserve blocking) before meeting demand
             self.drawn += deliverable
             shortfall = actual_output - deliverable
-            self.battery_status = 0
+            self.battery_status -= available_charge
             self.extra_required += shortfall
             return shortfall
         # Battery drains by output / efficiency (more stored energy consumed than delivered)

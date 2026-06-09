@@ -83,6 +83,10 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['chargeEfficiency'] = float(value)
         elif key_lower == 'gridcharge':
             overrides.setdefault('virtualBattery', {})['gridCharge'] = value
+        elif key_lower == 'dischargereservewh':
+            overrides.setdefault('virtualBattery', {})['dischargeReserveWh'] = int(value)
+        elif key_lower == 'dischargereserveuntil':
+            overrides.setdefault('virtualBattery', {})['dischargeReserveUntil'] = value
         elif key_lower == 'usebattery':
             overrides.setdefault('virtualBattery', {})['enabled'] = value
         elif key_lower == 'batteryprice':
@@ -132,6 +136,8 @@ def _load_settings(argv):
             'chargeEfficiency': 1.0,
             'gridCharge': 'ON',
             'batteryPrice': 0,
+            'dischargeReserveWh': 0,
+            'dischargeReserveUntil': '17:00',
         },
     }
     for key, value in defaults.items():
@@ -184,6 +190,8 @@ def _print_usage():
     print("  chargeEfficiency:N      Grid charging efficiency (e.g. 0.95; default 1.0)")
     print("  pvChargeEfficiency:N    PV charge efficiency (e.g. 0.96)")
     print("  maxOutputW:N            Maximum battery output in watts (e.g. 2400)")
+    print("  dischargeReserveWh:N    Hold back N Wh until dischargeReserveUntil time (default: 0)")
+    print("  dischargeReserveUntil:HH:MM  Release reserve for full discharge after this time (default: 17:00)")
 
 
 def _make_battery(vb, price_data):
@@ -201,6 +209,8 @@ def _make_battery(vb, price_data):
         use_export=bool(re.match('^on', str(vb['useExport']), re.IGNORECASE)),
         charge_efficiency=float(vb['chargeEfficiency']),
         grid_charge=bool(re.match('^on', str(vb['gridCharge']), re.IGNORECASE)),
+        discharge_reserve_wh=int(vb['dischargeReserveWh']),
+        discharge_reserve_until=str(vb['dischargeReserveUntil']),
     )
 
 
