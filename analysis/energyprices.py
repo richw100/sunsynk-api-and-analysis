@@ -6,6 +6,45 @@ from analysis.virtualbattery import VirtualBattery
 from analysis.energysummary import EnergySummary, EnergySummaryAggregator
 
 
+def _battery_warnings(battery: VirtualBattery, pd: PriceData) -> list:
+    """Return warning strings for operations that lose money at the given tariff rates."""
+    warnings = []
+    de = battery.discharge_efficiency
+    ce = battery.charge_efficiency
+    pce = battery.pv_charge_efficiency
+
+    if battery.grid_charge:
+        charge_cost = pd.current_off_peak / ce     # cost per kWh stored from grid
+        load_value = pd.current_peak * de           # value per kWh stored, discharged at peak
+        if charge_cost > load_value:
+            warnings.append(
+                f"grid charge to load makes a loss: costs {charge_cost*100:.2f}p/kWh stored"
+                f" ({pd.current_off_peak*100:.2f}p off-peak ÷ {ce} charge eff)"
+                f" but saves only {load_value*100:.2f}p/kWh"
+                f" ({pd.current_peak*100:.2f}p peak × {de} discharge eff)"
+            )
+        if battery.export == 1:
+            export_value = pd.current_export * de   # value per kWh stored, re-exported
+            if charge_cost > export_value:
+                warnings.append(
+                    f"grid charge to re-export makes a loss: costs {charge_cost*100:.2f}p/kWh stored"
+                    f" ({pd.current_off_peak*100:.2f}p off-peak ÷ {ce} charge eff)"
+                    f" but re-exports at only {export_value*100:.2f}p/kWh"
+                    f" ({pd.current_export*100:.2f}p export × {de} discharge eff)"
+                )
+
+    if battery.pv_enabled == 1:
+        pv_load_value = pd.current_peak * pce * de  # value per raw kWh of PV diverted to battery
+        if pd.current_export > pv_load_value:
+            warnings.append(
+                f"PV diversion to battery makes a loss: foregoes {pd.current_export*100:.2f}p/kWh export"
+                f" but saves only {pv_load_value*100:.2f}p/kWh at peak"
+                f" ({pd.current_peak*100:.2f}p peak × {pce} PV eff × {de} discharge eff)"
+            )
+
+    return warnings
+
+
 class EnergyPrices:
     def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
                  label: str = "", off_peak_baseline_kwh: float = 0.96,
@@ -212,6 +251,12 @@ class EnergyPrices:
         if days > 0:
             print("")
             print("VIRTUAL BATTERY SIMULATION  (models a battery charged at off-peak, discharged at peak)")
+            seen: set = set()
+            for summary in self.aggregator.summaries:
+                for w in _battery_warnings(self.orig_battery, summary.price_data):
+                    if w not in seen:
+                        seen.add(w)
+                        print(f"  WARNING: {w}")
             print(f"  Charged from grid at off-peak:              {t['battery_charge_amount']}kWh  (cost: £{t['battery_cost_from_grid']})")
             print(f"  Peak-rate value of energy delivered:        £{t['battery_nominal_cost']}  (what it would cost drawn from grid at peak)")
             print(f"  PV energy diverted to battery:              foregone export income: £{t['battery_lost_export_cost']}")
