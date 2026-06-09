@@ -8,7 +8,7 @@ class VirtualBattery:
                  start_charging=1000, stop_charging=2000,
                  export_window_start="17:00", export_window_stop="19:00",
                  discharge_efficiency=0.92, pv_charge_efficiency=0.96, max_output_w=2400,
-                 use_export=False, charge_efficiency=1.0):
+                 use_export=False, charge_efficiency=1.0, grid_charge=True):
         self.battery_size = battery_size
         self.battery_status = battery_size
         self.charge_amount = 0
@@ -21,6 +21,7 @@ class VirtualBattery:
         self.stop_charging = stop_charging
         self.price_data = price_data
         self.charge_efficiency = charge_efficiency
+        self.grid_charge = grid_charge
         self.lost_export_cost = 0
         self.export = 1 if use_export else 0
         self.export_cost = 0
@@ -45,8 +46,9 @@ class VirtualBattery:
         self._export_intervals = max(1, round(window_seconds / 300))
 
     def recharge(self):
-        self.charge_amount += self.battery_size - self.battery_status
-        self.battery_status = self.battery_size
+        if self.grid_charge:
+            self.charge_amount += self.battery_size - self.battery_status
+            self.battery_status = self.battery_size
 
     def discharge(self, time: datetime):
         run_down_amount = 1000

@@ -81,6 +81,8 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['maxOutputW'] = float(value)
         elif key_lower == 'chargeefficiency':
             overrides.setdefault('virtualBattery', {})['chargeEfficiency'] = float(value)
+        elif key_lower == 'gridcharge':
+            overrides.setdefault('virtualBattery', {})['gridCharge'] = value
         elif key_lower == 'usebattery':
             overrides.setdefault('virtualBattery', {})['enabled'] = value
         elif key_lower == 'batteryprice':
@@ -128,6 +130,7 @@ def _load_settings(argv):
             'pvChargeEfficiency': 0.96,
             'maxOutputW': 2400,
             'chargeEfficiency': 1.0,
+            'gridCharge': 'ON',
             'batteryPrice': 0,
         },
     }
@@ -197,6 +200,7 @@ def _make_battery(vb, price_data):
         max_output_w=float(vb['maxOutputW']),
         use_export=bool(re.match('^on', str(vb['useExport']), re.IGNORECASE)),
         charge_efficiency=float(vb['chargeEfficiency']),
+        grid_charge=bool(re.match('^on', str(vb['gridCharge']), re.IGNORECASE)),
     )
 
 

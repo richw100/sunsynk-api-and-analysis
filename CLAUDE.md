@@ -31,7 +31,7 @@ python analysis/collectdata.py [config:path/to/config.json] [showDays:ON|OFF] \
   [energyPrices:file.json] [startDate:YYYY-MM-DD] [stopDate:YYYY-MM-DD] \
   [offPeakShift:ON|OFF] [offPeakBaseline:N] \
   [useBattery:ON|OFF] [batterySize:N] [usePV:ON|OFF] [startCharge:N] [stopCharge:N] \
-  [exportWindowStart:HH:MM] [exportWindowStop:HH:MM] [useExport:ON|OFF]
+  [exportWindowStart:HH:MM] [exportWindowStop:HH:MM] [useExport:ON|OFF] [gridCharge:ON|OFF]
 # Linux/Debian: analysis/runCollectData.sh [key:value ...]
 # Windows:      analysis\runCollectData.bat [key:value ...]
 ```
@@ -54,7 +54,7 @@ Installed via `pip install sunsynk-api-client`. A thin async wrapper around the 
 - `energymonth.py` — `EnergyMonth`: parses monthly daily kWh totals from the plant energy month endpoint (Load, PV, Export, Import labels).
 - `energyday.py` — `IntervalSummary` and `EnergyDay`: parse the 5-minute interval timeseries from the plant energy day endpoint. `IntervalSummary` accumulates peak/offpeak Wh totals for one label (PV, Grid, Load); named `IntervalSummary` to avoid a name clash with `energysummary.py`'s `EnergySummary`.
 - `pricedata.py` — `PriceData` dataclass: energy tariff rates (off-peak/peak/export rates, standing charge, off-peak window). Hardcoded defaults, overridden per-period by `EnergyPrices.check_date()`. `off_peak_baseline_kwh` is the configurable reference (kWh/day for a 7-hour window) used to estimate baseline off-peak usage; `off_peak_average` is computed from it by `EnergySummary` — do not set directly.
-- `virtualbattery.py` — `VirtualBattery`: simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from the upstream `Battery` model (realtime API response).
+- `virtualbattery.py` — `VirtualBattery`: simulates battery charge/discharge over historical 5-minute intervals, tracking kWh drawn, charged, and PV-charged to compute potential savings. Named `VirtualBattery` to distinguish it from the upstream `Battery` model (realtime API response). `grid_charge=False` disables grid top-up at off-peak (models PV-only charging).
 - `energysummary.py` — `QueryType` enum, `EnergySummary`, and `EnergySummaryAggregator`:
   - `EnergySummary` — accumulates per-day financial data for a single tariff period; `new_month()` compounds interest on cumulative savings. Computes `off_peak_average` from `price_data.off_peak_baseline_kwh` scaled to the actual window length.
   - `EnergySummaryAggregator` — holds one `EnergySummary` per tariff period and computes cross-period grand totals.

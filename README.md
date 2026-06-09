@@ -69,6 +69,7 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `exportWindowStart:` | `HH:MM` | Export window start (sell back to grid during this window) |
 | `exportWindowStop:` | `HH:MM` | Export window stop |
 | `useExport:` | `ON`\|`OFF` | Sell virtual battery charge back to grid during export window |
+| `gridCharge:` | `ON`\|`OFF` | Charge battery from the grid during the off-peak window (default: `ON`). Set to `OFF` to model a PV-only charging strategy |
 | `dischargeEfficiency:` | float (e.g. `0.92`) | Fraction of stored energy delivered to load |
 | `chargeEfficiency:` | float (e.g. `0.95`) | Fraction of grid energy actually stored (default `1.0`) |
 | `pvChargeEfficiency:` | float (e.g. `0.96`) | Fraction of PV surplus actually stored |
