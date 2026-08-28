@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+
+# Local config
+local.properties
+
+# Android Studio / IDE
+.idea/
+*.iml
+captures/
+
+# Keystore
+*.jks
+*.keystore

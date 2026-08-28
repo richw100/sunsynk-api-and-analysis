@@ -1,0 +1,30 @@
+{
+    "showDays": "OFF",
+    "energyPrices": "_EnergyPrices.json",
+    "startDate": "",
+    "stopDate": "",
+    "scanFromYear": 2025,
+    "originalPrice": 6206.47,
+    "_commentOriginalPrice": "Original price = £6210 Take off £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)",
+    "offPeakShift": "ON",
+    "offPeakBaseline": 0.96,
+    "virtualBattery": [
+        {
+            "label": "Grid charge, PV only",
+            "enabled": "OFF",
+            "batterySize": 5200,
+            "batteryPrice": 1900,
+            "usePV": "ON",
+            "gridCharge": "ON",
+            "startCharge": 5200,
+            "stopCharge": 5200,
+            "exportWindowStart": "21:00",
+            "exportWindowStop": "23:00",
+            "useExport": "OFF",
+            "dischargeEfficiency": 0.92,
+            "pvChargeEfficiency": 0.96,
+            "maxOutputW": 2400,
+            "chargeEfficiency": 0.96
+        }
+    ]
+}
