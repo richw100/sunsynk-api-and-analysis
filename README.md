@@ -75,6 +75,18 @@ Settings are loaded from `config.json` in the project root. Any argument on the 
 | `pvChargeEfficiency:` | float (e.g. `0.96`) | Fraction of PV surplus actually stored |
 | `maxOutputW:` | float (e.g. `2400`) | Maximum battery output in watts |
 
+### Plug-in solar (PV boost) options
+
+Estimate the return on investment of adding "plug-in solar" panels to an existing array,
+using the measured PV generation curve scaled to the larger array.
+
+| Argument | Values | Description |
+|---|---|---|
+| `existingPvWatts:` | number (W) | Current array size, used to scale the measured PV curve (default: `3115` = 7×445 W) |
+| `pvBoostWatts:` | number (W) | Added panel capacity to model, compared against a no-boost baseline |
+| `pvBoostCost:` | number (£) | Cost of the added panels — used for the payback period |
+| `pvBoostClipW:` | number (W) | Microinverter AC output clip for the added panels (omit for no clip) |
+
 ### Multi-tariff comparison
 
 To compare multiple tariff scenarios side by side, set `energyPrices` to a list in `config.json`:
@@ -113,6 +125,34 @@ To compare different battery scenarios (e.g. different sizes, PV charging on/off
 ```
 
 The solar/tariff output is printed once (from the first battery config). Each battery config then gets its own `VIRTUAL BATTERY SIMULATION` section. A `BATTERY COMPARISON` table follows, showing all key battery metrics side by side with a `Difference` column when exactly two configs are provided.
+
+### Plug-in solar ROI comparison
+
+To compare adding extra panels, set `pvBoost` in `config.json` to a list of options. Each
+option needs only `addWatts` and `cost`; `label` and `inverterClipW` are optional. A
+zero-add **Baseline** column is inserted automatically, and every money figure in the
+`PV BOOST COMPARISON` table is a change against it, annualised over the data window.
+
+```json
+{
+    "existingPvWatts": 3115,
+    "pvBoost": [
+        { "label": "+1260W (2 panels), 800W micro", "addWatts": 1260, "cost": 989, "inverterClipW": 800 },
+        { "label": "+1260W unclipped",              "addWatts": 1260, "cost": 989 }
+    ]
+}
+```
+
+`pvBoost` may instead be a single object. The same run can be produced from the command
+line: `pvBoostWatts:1260 pvBoostCost:989 pvBoostClipW:800`.
+
+The model adds a copy of the measured PV curve, scaled by `addWatts / existingPvWatts`
+and flat-topped at `inverterClipW`, then re-runs the full simulation — so the extra
+generation shows up as reduced grid import (valued at the peak rate) and increased export
+(at the SEG rate). Caveats: it assumes the added panels share the existing array's aspect,
+tilt and shading; clipping is applied to 5-minute average power so it slightly
+under-states real instantaneous clipping; DNO/G98 export limits and DC-side losses are
+not modelled.
 
 ## Understanding the output
 
@@ -219,6 +259,25 @@ When `virtualBattery` is a list, each battery config runs its own simulation aga
 When exactly two configs are provided, a `Difference` column shows the change from the first to the second.
 
 If both `energyPrices` and `virtualBattery` are lists, one `BATTERY COMPARISON` table is printed per tariff file, followed by the standard `COMPARISON` table for the first battery config.
+
+### PV BOOST COMPARISON (plug-in solar mode)
+
+When `pvBoost` defines extra-panel options, this table compares each against the
+auto-inserted zero-add **Baseline**. Every row except the capacity/clip rows is a delta
+versus the baseline, annualised over the data window (`×365 / days`):
+
+- **Extra PV delivered (kWh/yr)**: additional generation after the microinverter clip
+- **Lost to clipping (kWh/yr)** / **Clipping loss (% of potential)**: energy the added array would have produced but the clip discarded
+- **value of clipped energy (~export)**: the clipped energy priced at the SEG rate (indicative floor)
+- **Extra self-consumption saving**: value of the grid import the extra PV avoids (at peak rate)
+- **Extra export (SEG) income**: additional export earnings
+- **Extra battery saving**: extra virtual-battery saving from more PV surplus (only when a battery config is enabled)
+- **Total extra annual saving**: self-consumption + export (+ battery)
+- **Payback** / **Simple ROI (%/yr)**: `cost ÷ total extra annual saving` and its reciprocal
+
+The comparison always uses the first battery config and first tariff file. Including an
+unclipped twin of an option (same `addWatts`/`cost`, no `inverterClipW`) shows the clip's
+cost directly in the `Payback` row.
 
 ---
 

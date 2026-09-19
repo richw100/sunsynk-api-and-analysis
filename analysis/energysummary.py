@@ -35,6 +35,8 @@ class EnergySummary:
         self.total_calc_import_peak = 0
         self.total_calc_export_peak = 0
 
+        self.total_pv_clip_loss = 0
+
         self.off_peak_excess = 0
         self.off_peak_excess_savings = 0
 
@@ -102,6 +104,8 @@ class EnergySummary:
         self.total_calc_import_peak += energyday.get_calc_import(QueryType.PEAK)
         self.total_calc_export_peak += energyday.get_calc_export(QueryType.PEAK)
 
+        self.total_pv_clip_loss += energyday.get_pv_clip_loss()
+
         self.total_saved_calc += energyday.get_calc_load() - energyday.get_calc_import()
         self.total_saved_supplied += energyday.get_supplied_load() - energyday.get_supplied_import()
 
@@ -157,6 +161,7 @@ class EnergySummaryAggregator:
             "total_calc_export_off_peak": 0,
             "total_calc_import_peak": 0,
             "total_calc_export_peak": 0,
+            "total_pv_clip_loss": 0,
             "total_off_peak_excess": 0,
             "total_off_peak_excess_savings": 0,
             "days": 0,
@@ -194,6 +199,7 @@ class EnergySummaryAggregator:
             totals["total_calc_export_off_peak"] += summary.total_calc_export_off_peak/1000
             totals["total_calc_import_peak"] += summary.total_calc_import_peak/1000
             totals["total_calc_export_peak"] += summary.total_calc_export_peak/1000
+            totals["total_pv_clip_loss"] += summary.total_pv_clip_loss/1000
             totals["total_off_peak_excess"] += summary.off_peak_excess
             totals["total_off_peak_excess_savings"] += summary.off_peak_excess_savings
             totals["days"] += summary.days

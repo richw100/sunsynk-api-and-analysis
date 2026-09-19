@@ -73,16 +73,45 @@ class IntervalSummary(Resource):
 
 class EnergyDay(Resource):
     def __init__(self, data, date: str, month: EnergyMonth, battery: VirtualBattery,
-                 offpeakstart: str, offpeakstop: str):
+                 offpeakstart: str, offpeakstop: str,
+                 pv_extra_ratio: float = 0.0, pv_extra_clip_w=None):
         self.data = data
         energy = self.data['infos']
         self._start_dt = datetime.strptime(offpeakstart, "%H:%M")
         self._stop_dt = datetime.strptime(offpeakstop, "%H:%M")
+
+        # Model additional "plug-in solar" panels: add a scaled copy of the measured PV
+        # curve to PV and subtract it from the net Grid meter, optionally flat-topped by
+        # a microinverter AC clip.  pv_extra_ratio == 0.0 leaves the raw records untouched
+        # (byte-identical to no boost).  self.data is never mutated — it is shared across
+        # battery configs and boost scenarios via collectdata's day cache.
+        pv_by_time = {}
         for item in energy:
             if item['label'] == "PV":
-                self.pv = IntervalSummary(item, battery, offpeakstart, offpeakstop)
+                pv_by_time = {r['time']: float(r['value']) for r in item['records']}
+
+        self.pv_clip_loss = 0.0  # Wh: energy the added array would have made but the clip lost
+        if pv_extra_ratio > 0.0 and pv_extra_clip_w is not None:
+            for w in pv_by_time.values():
+                self.pv_clip_loss += max(0.0, pv_extra_ratio * max(0.0, w) - float(pv_extra_clip_w)) / 12.0
+
+        def _boost(item):
+            if pv_extra_ratio <= 0.0 or item['label'] not in ("PV", "Grid"):
+                return item
+            sign = 1.0 if item['label'] == "PV" else -1.0
+            records = []
+            for r in item['records']:
+                extra = pv_extra_ratio * max(0.0, pv_by_time.get(r['time'], 0.0))
+                if pv_extra_clip_w is not None:
+                    extra = min(extra, float(pv_extra_clip_w))
+                records.append({**r, 'value': str(float(r['value']) + sign * extra)})
+            return {'label': item['label'], 'records': records}
+
+        for item in energy:
+            if item['label'] == "PV":
+                self.pv = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop)
             elif item['label'] == "Grid":
-                self.grid = IntervalSummary(item, battery, offpeakstart, offpeakstop, is_load=True)
+                self.grid = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop, is_load=True)
             elif item['label'] == "Load":
                 self.load = IntervalSummary(item, battery, offpeakstart, offpeakstop)
 
@@ -142,6 +171,10 @@ class EnergyDay(Resource):
 
     def get_calc_pv(self):
         return self.pv.peak + self.pv.offpeak
+
+    def get_pv_clip_loss(self):
+        """Wh of added-panel generation discarded by the microinverter AC clip (0 if none)."""
+        return self.pv_clip_loss
 
     def get_calc_pv_peak(self):
         return self.pv.peak

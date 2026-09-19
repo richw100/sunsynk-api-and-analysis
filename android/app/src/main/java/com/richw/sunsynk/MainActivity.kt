@@ -157,7 +157,7 @@ fun App(
                 onEditTariff = { filename ->
                     tariffStore.ensureExternal(filename)
                     editedFiles = editedFiles + filename
-                    navController.navigate("tariff/${java.net.URLEncoder.encode(filename, "UTF-8")}")
+                    navController.navigate("tariff/${android.net.Uri.encode(filename)}")
                 },
                 onDeleteTariff = { filename ->
                     tariffStore.delete(filename)
@@ -166,8 +166,8 @@ fun App(
             )
         }
         composable("tariff/{filename}") { backStack ->
-            val filename = java.net.URLDecoder.decode(
-                backStack.arguments?.getString("filename") ?: "", "UTF-8"
+            val filename = android.net.Uri.decode(
+                backStack.arguments?.getString("filename") ?: ""
             )
             if (filename.isNotBlank()) {
                 val periods = remember(filename) { tariffStore.load(filename) }

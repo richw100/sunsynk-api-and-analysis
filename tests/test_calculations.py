@@ -5,6 +5,7 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator, Query
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices
+from analysis.energyday import EnergyDay
 
 
 def make_price_data(peak=0.30, offpeak=0.10, export=0.15,
@@ -26,8 +27,10 @@ class MockEnergyDay:
     """Minimal EnergyDay stub for testing EnergySummary without API calls."""
     def __init__(self, calc_import=0, calc_import_peak=0, calc_import_offpeak=0,
                  calc_export=0, calc_export_peak=0, calc_export_offpeak=0,
-                 calc_pv=0, calc_load=0, calc_load_peak=0, calc_load_offpeak=0,
-                 supplied_load=0.0, supplied_import=0.0, supplied_pv=0.0, supplied_export=0.0):
+                 calc_pv=0, calc_pv_peak=0, calc_pv_offpeak=0,
+                 calc_load=0, calc_load_peak=0, calc_load_offpeak=0,
+                 supplied_load=0.0, supplied_import=0.0, supplied_pv=0.0, supplied_export=0.0,
+                 pv_clip_loss=0.0):
         self._import = calc_import
         self._import_peak = calc_import_peak
         self._import_offpeak = calc_import_offpeak
@@ -35,6 +38,8 @@ class MockEnergyDay:
         self._export_peak = calc_export_peak
         self._export_offpeak = calc_export_offpeak
         self._pv = calc_pv
+        self._pv_peak = calc_pv_peak
+        self._pv_offpeak = calc_pv_offpeak
         self._load = calc_load
         self._load_peak = calc_load_peak
         self._load_offpeak = calc_load_offpeak
@@ -42,6 +47,7 @@ class MockEnergyDay:
         self._supplied_import = supplied_import
         self._supplied_pv = supplied_pv
         self._supplied_export = supplied_export
+        self._pv_clip_loss = pv_clip_loss
 
     def get_calc_import(self, qtype=QueryType.BOTH):
         if qtype == QueryType.PEAK:    return self._import_peak
@@ -54,6 +60,9 @@ class MockEnergyDay:
         return self._export
 
     def get_calc_pv(self):              return self._pv
+    def get_calc_pv_peak(self):         return self._pv_peak
+    def get_calc_pv_off_peak(self):     return self._pv_offpeak
+    def get_pv_clip_loss(self):         return self._pv_clip_loss
     def get_calc_load(self):            return self._load
     def get_calc_load_peak(self):       return self._load_peak
     def get_calc_load_off_peak(self):   return self._load_offpeak
@@ -577,3 +586,72 @@ def test_off_peak_baseline_preserved_through_tariff_switch():
     assert ep.price_data.off_peak_baseline_kwh == pytest.approx(1.5)
     # SAMPLE_PRICES 2024 period: 00:30-07:30 = 7h → off_peak_average should equal baseline
     assert ep.price_data.off_peak_average == pytest.approx(1.5, rel=1e-6)
+
+
+# ─── EnergyDay PV boost (plug-in solar) ──────────────────────────────────────
+
+class _FakeMonth:
+    """Minimal EnergyMonth stub: no daily supplied totals."""
+    _empty = {'records': []}
+    def get_load(self):   return self._empty
+    def get_import(self):  return self._empty
+    def get_pv(self):      return self._empty
+    def get_export(self):  return self._empty
+
+
+def _boost_day_data():
+    def recs(pairs):
+        return [{'time': t, 'value': str(float(v))} for t, v in pairs]
+    # offpeak 00:00-06:00. 09:00 is a net-import interval that flips to export when boosted.
+    return {'infos': [
+        {'label': 'PV',   'records': recs([('00:00', 0), ('08:00', 1000), ('09:00', 300), ('12:00', 2000)])},
+        {'label': 'Grid', 'records': recs([('00:00', 500), ('08:00', -200), ('09:00', 100), ('12:00', -1500)])},
+        {'label': 'Load', 'records': recs([('00:00', 500), ('08:00', 800), ('09:00', 400), ('12:00', 500)])},
+    ]}
+
+
+def _day(pv_extra_ratio=0.0, pv_extra_clip_w=None):
+    return EnergyDay(_boost_day_data(), '2025-06-10', _FakeMonth(), None,
+                     '00:00', '06:00',
+                     pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w)
+
+
+def test_energyday_pv_extra_ratio_0_is_noop():
+    data = _boost_day_data()
+    before = [dict(r) for item in data['infos'] for r in item['records']]
+    day = EnergyDay(data, '2025-06-10', _FakeMonth(), None, '00:00', '06:00', pv_extra_ratio=0.0)
+    base = _day()
+    assert day.get_calc_pv() == base.get_calc_pv()
+    assert day.get_calc_import() == base.get_calc_import()
+    assert day.get_calc_export() == base.get_calc_export()
+    assert day.get_pv_clip_loss() == 0.0
+    after = [dict(r) for item in data['infos'] for r in item['records']]
+    assert before == after  # raw records untouched
+
+
+def test_energyday_pv_extra_ratio_doubles_pv():
+    base = _day()
+    boosted = _day(pv_extra_ratio=1.0)
+    assert boosted.get_calc_pv() == pytest.approx(2 * base.get_calc_pv())
+
+
+def test_energyday_pv_extra_ratio_shifts_grid_to_export():
+    base = _day()
+    boosted = _day(pv_extra_ratio=1.0)
+    # more PV → less import, more export
+    assert boosted.get_calc_import() < base.get_calc_import()
+    assert boosted.get_calc_export() > base.get_calc_export()
+    # 09:00 was +100W import; +300W extra PV flips it to 200W export
+    # baseline peak import includes that 100/12 Wh; boosted does not
+    assert base.grid.peak - boosted.grid.peak > (100 / 12) - 1e-6
+
+
+def test_energyday_pv_extra_clip_caps_generation_and_reports_loss():
+    base = _day()
+    unclipped = _day(pv_extra_ratio=1.0)
+    clipped = _day(pv_extra_ratio=1.0, pv_extra_clip_w=800)
+    # clipped generation sits between baseline and the unclipped boost
+    assert base.get_calc_pv() < clipped.get_calc_pv() < unclipped.get_calc_pv()
+    # loss = Σ max(0, ratio*PV - clip)/12  over 08:00 (1000→200) and 12:00 (2000→1200)
+    assert clipped.get_pv_clip_loss() == pytest.approx((200 + 1200) / 12)
+    assert unclipped.get_pv_clip_loss() == 0.0

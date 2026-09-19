@@ -126,6 +126,80 @@ async def test_get_energy_day_with_peak_export(aiohttp_client, tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_get_energy_day_pv_boost(aiohttp_client, tmp_path, monkeypatch):
+    # Sunny 2025-06-10 with pv_extra_ratio=1.0 (double the array).
+    # PV doubles exactly; the extra generation cuts peak import and lifts peak export.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
+    mock_api_server = MockApiServer(aiohttp_client)
+    client = await mock_api_server.energy_client()
+
+    month = await client.get_energy_month(12345, '2025-06-01')
+    base = await client.get_energy_day(12345, '2025-06-10', month,
+                                       VirtualBattery(PriceData()), '00:00', '06:00')
+    boosted = await client.get_energy_day(12345, '2025-06-10', month,
+                                          VirtualBattery(PriceData()), '00:00', '06:00',
+                                          pv_extra_ratio=1.0)
+
+    assert boosted.get_calc_pv() == pytest.approx(2 * base.get_calc_pv())
+    assert boosted.get_calc_pv_off_peak() == 0.0            # no PV before 06:00
+    assert boosted.get_calc_import(QueryType.OFFPEAK) == pytest.approx(612.0, abs=0.1)  # unchanged
+    assert boosted.get_calc_import(QueryType.PEAK) < base.get_calc_import(QueryType.PEAK)
+    assert boosted.get_calc_export(QueryType.PEAK) > base.get_calc_export(QueryType.PEAK)
+    assert boosted.get_pv_clip_loss() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_energy_day_pv_boost_clipped(aiohttp_client, tmp_path, monkeypatch):
+    # Same day/ratio, but an 800 W microinverter clip: PV and export land between the
+    # baseline and the unclipped boost, and the clipped energy is reported.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
+    mock_api_server = MockApiServer(aiohttp_client)
+    client = await mock_api_server.energy_client()
+
+    month = await client.get_energy_month(12345, '2025-06-01')
+    base = await client.get_energy_day(12345, '2025-06-10', month,
+                                       VirtualBattery(PriceData()), '00:00', '06:00')
+    unclipped = await client.get_energy_day(12345, '2025-06-10', month,
+                                            VirtualBattery(PriceData()), '00:00', '06:00',
+                                            pv_extra_ratio=1.0)
+    clipped = await client.get_energy_day(12345, '2025-06-10', month,
+                                          VirtualBattery(PriceData()), '00:00', '06:00',
+                                          pv_extra_ratio=1.0, pv_extra_clip_w=800)
+
+    assert base.get_calc_pv() < clipped.get_calc_pv() < unclipped.get_calc_pv()
+    assert base.get_calc_export() < clipped.get_calc_export() < unclipped.get_calc_export()
+    assert clipped.get_pv_clip_loss() > 0.0
+    # unclipped delivers exactly the doubled curve, so its clip loss is zero
+    assert unclipped.get_pv_clip_loss() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_energy_day_pv_boost_does_not_mutate_shared_raw(aiohttp_client, tmp_path, monkeypatch):
+    # A boosted build must not corrupt the cached raw dict used by later plain builds.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
+    mock_api_server = MockApiServer(aiohttp_client)
+    client = await mock_api_server.energy_client()
+
+    month = await client.get_energy_month(12345, '2025-06-01')
+    plain1 = await client.get_energy_day(12345, '2025-06-10', month,
+                                         VirtualBattery(PriceData()), '00:00', '06:00')
+    await client.get_energy_day(12345, '2025-06-10', month,
+                                VirtualBattery(PriceData()), '00:00', '06:00', pv_extra_ratio=1.0)
+    plain2 = await client.get_energy_day(12345, '2025-06-10', month,
+                                         VirtualBattery(PriceData()), '00:00', '06:00')
+
+    assert plain2.get_calc_pv() == plain1.get_calc_pv()
+    assert plain2.get_calc_import() == plain1.get_calc_import()
+    assert plain2.get_calc_export() == plain1.get_calc_export()
+
+
+@pytest.mark.asyncio
 async def test_get_energy_day_battery_runs_out(aiohttp_client, tmp_path, monkeypatch):
     # With a 30 Wh battery and a 765 W peak Grid record at 06:00 (value=63.75 Wh),
     # deliverable = 30 * 0.92 = 27.6 Wh < 63.75 Wh demand → battery exhausted.

@@ -63,6 +63,14 @@ def _parse_cli_args(argv):
             overrides['scanFromYear'] = int(value)
         elif key_lower == 'originalprice':
             overrides['originalPrice'] = float(value)
+        elif key_lower == 'existingpvwatts':
+            overrides['existingPvWatts'] = float(value)
+        elif key_lower == 'pvboostwatts':
+            overrides.setdefault('pvBoostCli', {})['addWatts'] = float(value)
+        elif key_lower == 'pvboostcost':
+            overrides.setdefault('pvBoostCli', {})['cost'] = float(value)
+        elif key_lower == 'pvboostclipw':
+            overrides.setdefault('pvBoostCli', {})['inverterClipW'] = float(value)
         elif key_lower == 'exportwindowstart':
             overrides.setdefault('virtualBattery', {})['exportWindowStart'] = value
         elif key_lower == 'exportwindowstop':
@@ -109,6 +117,7 @@ def _load_settings(argv):
         print(f"Config: {config_path} not found, using defaults")
 
     vb_override = overrides.pop('virtualBattery', {})
+    pv_boost_cli = overrides.pop('pvBoostCli', {})
     settings.update(overrides)
 
     defaults = {
@@ -118,6 +127,7 @@ def _load_settings(argv):
         'stopDate': '',
         'scanFromYear': 2025,
         'originalPrice': 6206.47,
+        'existingPvWatts': 3115,
         'offPeakShift': 'ON',
         'offPeakBaseline': 0.96,
         'description': '',
@@ -157,8 +167,46 @@ def _load_settings(argv):
         for key, value in vb_defaults.items():
             vb_raw.setdefault(key, value)
 
+    settings['pvBoost'] = _normalize_pv_boosts(
+        settings.get('pvBoost'), float(settings['existingPvWatts']), pv_boost_cli
+    )
+
     settings['_configPath'] = config_path
     return settings
+
+
+def _normalize_pv_boosts(raw, existing_pv_watts: float, cli: dict) -> list:
+    """Return a list of PV-boost scenario dicts, always including a zero-add baseline first.
+
+    Each scenario dict has: label, addWatts, cost, inverterClipW (W or None),
+    pv_extra_ratio (addWatts / existing_pv_watts).  Models bolt-on "plug-in solar" kits:
+    a scaled copy of the measured PV curve, optionally flat-topped by a microinverter clip.
+    """
+    baseline = {'label': 'Baseline', 'addWatts': 0.0, 'cost': 0.0, 'inverterClipW': None}
+
+    if cli:
+        entries = [dict(baseline), dict(cli)]
+    elif raw is None:
+        entries = [dict(baseline)]
+    elif isinstance(raw, list):
+        entries = [dict(e) for e in raw]
+    else:
+        entries = [dict(raw)]
+
+    for e in entries:
+        e['addWatts'] = float(e.get('addWatts', 0) or 0)
+        e['cost'] = float(e.get('cost', 0) or 0)
+        clip = e.get('inverterClipW')
+        e['inverterClipW'] = float(clip) if clip and float(clip) > 0 else None
+        e.setdefault('label', 'Baseline' if e['addWatts'] == 0 else f"+{e['addWatts']:.0f}W")
+
+    if any(e['addWatts'] > 0 for e in entries) and not any(e['addWatts'] == 0 for e in entries):
+        entries.insert(0, dict(baseline))
+
+    for e in entries:
+        e['pv_extra_ratio'] = e['addWatts'] / existing_pv_watts if existing_pv_watts > 0 else 0.0
+
+    return entries
 
 
 def _print_usage():
@@ -175,6 +223,13 @@ def _print_usage():
     print("  originalPrice:N         Installation cost for ROI calculation")
     print("  offPeakShift:ON|OFF     Include off-peak load-shifting in savings totals (default: ON)")
     print("  offPeakBaseline:N       Expected kWh/day at off-peak for a 7-hour window (default: 0.96)")
+    print("")
+    print("Plug-in solar (PV boost) options:")
+    print("  existingPvWatts:N       Current array size in W for scaling (default: 3115 = 7x445W)")
+    print("  pvBoostWatts:N          Added panel capacity in W (compared against a no-boost baseline)")
+    print("  pvBoostCost:N           Cost of the added panels in £ (for payback period)")
+    print("  pvBoostClipW:N          Microinverter AC output clip for the added panels in W")
+    print("  (config.json 'pvBoost' may instead be a list of {label,addWatts,cost,inverterClipW})")
     print("")
     print("Virtual battery options:")
     print("  useBattery:ON|OFF       Enable virtual battery simulation (default: ON)")
@@ -335,6 +390,124 @@ def _print_battery_comparison(all_battery_results, price_file_idx=0):
         print(line)
 
 
+def _pv_boost_metrics(all_boost_results, battery_idx=0, price_idx=0):
+    """Per-scenario ROI of added 'plug-in solar' panels vs the baseline (boost index 0).
+
+    all_boost_results: list of (boost_dict, all_battery_results), where all_battery_results
+    is a list of (bc_label, [EnergyPrices, ...]).  Returns one metrics dict per boost option,
+    all money figures annualised (x365/days) and quoted as a delta against the baseline.
+    """
+    def _prices(entry):
+        return entry[1][battery_idx][1][price_idx]
+
+    p0 = _prices(all_boost_results[0])
+    t0 = p0.get_grand_totals()
+    d0 = p0.get_derived()
+    days = t0['days']
+    ann = 365.0 / days if days > 0 else 0.0
+    battery_enabled = bool(p0.battery_enabled)
+
+    rows = []
+    for entry in all_boost_results:
+        boost = entry[0]
+        pi = _prices(entry)
+        ti = pi.get_grand_totals()
+        di = pi.get_derived()
+        export_rate = pi.price_data.current_export
+
+        deliv = round(ann * (ti['total_calc_pv'] - t0['total_calc_pv']), 2)
+        clip = round(ann * ti['total_pv_clip_loss'], 2)
+        clip_pct = round(100 * clip / (deliv + clip), 1) if (deliv + clip) > 0 else 0.0
+        self_cons = round(ann * (t0['total_cost'] - ti['total_cost']), 2)
+        export_inc = round(ann * (ti['total_export_amount_calc'] - t0['total_export_amount_calc']), 2)
+        batt = round(ann * (di['battery_savings'] - d0['battery_savings']), 2) if battery_enabled else 0.0
+        total_extra = round(self_cons + export_inc + batt, 2)
+        cost = float(boost['cost'])
+        payback = round(cost / total_extra, 1) if total_extra > 0 else None
+        roi = round(100 * total_extra / cost, 1) if cost > 0 else None
+
+        rows.append({
+            'label': boost['label'],
+            'add_watts': float(boost['addWatts']),
+            'clip_w': boost['inverterClipW'],
+            'deliv': deliv,
+            'clip': clip,
+            'clip_pct': clip_pct,
+            'clip_value': round(clip * export_rate, 2),
+            'self_cons': self_cons,
+            'export_inc': export_inc,
+            'batt': batt,
+            'battery_enabled': battery_enabled,
+            'total_extra': total_extra,
+            'cost': cost,
+            'payback': payback,
+            'roi': roi,
+        })
+    return rows
+
+
+def _print_pv_boost_comparison(all_boost_results, existing_pv_watts, battery_idx=0, price_idx=0):
+    """Side-by-side ROI / payback of added PV panels against a no-extra-panels baseline."""
+    if len(all_boost_results) < 2:
+        return
+    p0 = all_boost_results[0][1][battery_idx][1][price_idx]
+    days = p0.get_grand_totals()['days']
+    if days <= 0:
+        return
+
+    m = _pv_boost_metrics(all_boost_results, battery_idx, price_idx)
+    labels = [x['label'] for x in m]
+    col_w = max(14, max(len(l) for l in labels) + 2)
+    row_w = 40
+    battery_enabled = m[0]['battery_enabled']
+
+    # Every figure below is already a delta vs the baseline (its column is all zero),
+    # so no separate "Difference" column is needed.
+    header = " " * row_w + "".join(l.rjust(col_w) for l in labels)
+
+    def row(name, key, fmt):
+        line = name.ljust(row_w) + "".join(fmt(x[key]).rjust(col_w) for x in m)
+        print(line)
+
+    def row_text(name, values):
+        print(name.ljust(row_w) + "".join(v.rjust(col_w) for v in values))
+
+    def money(v):
+        return f"£{v:.2f}"
+
+    def kwh(v):
+        return f"{v:.1f}kWh"
+
+    print(f"\nPV BOOST COMPARISON  (Δ vs baseline, annualised ×365/{days}d; "
+          f"existing array {existing_pv_watts:.0f}W; battery cfg [{battery_idx}], tariff [{price_idx}])")
+    print(header)
+
+    row("Added PV capacity:", 'add_watts', lambda v: f"{v:.0f}W")
+    row_text("Microinverter clip:",
+             [(f"{x['clip_w']:.0f}W" if x['clip_w'] else "none") for x in m])
+    row("Extra PV delivered:", 'deliv', kwh)
+    row("Lost to clipping:", 'clip', kwh)
+    row("Clipping loss (% of potential):", 'clip_pct', lambda v: f"{v:.1f}%")
+    row("  value of clipped energy (~export):", 'clip_value', money)
+    row("Extra self-consumption saving:", 'self_cons', money)
+    row("Extra export (SEG) income:", 'export_inc', money)
+    if battery_enabled:
+        row("Extra battery saving:", 'batt', money)
+    row("Total extra annual saving:", 'total_extra', money)
+    row("Kit cost:", 'cost', money)
+
+    row_text("Payback:",
+             [(f"{x['payback']:.1f}yr" if x['payback'] is not None else "N/A") for x in m])
+    row_text("Simple ROI (%/yr):",
+             [(f"{x['roi']:.1f}%" if x['roi'] is not None else "N/A") for x in m])
+
+    print("")
+    print("  Assumes added panels share the existing array's generation profile (aspect,")
+    print("  tilt, shading). Microinverter clipping is modelled from 5-min average power")
+    print("  and slightly under-states real instantaneous clipping. DNO/G98 export limits")
+    print("  and DC-side losses are not modelled; payback uses historical tariff rates.")
+
+
 async def main():
     if '--help' in sys.argv or '-h' in sys.argv:
         _print_usage()
@@ -369,6 +542,11 @@ async def main():
     battery_configs = vb_raw if isinstance(vb_raw, list) else [vb_raw]
     multi_battery = len(battery_configs) > 1
 
+    # pvBoost: list of "plug-in solar" scenarios, always with a zero-add baseline first
+    existing_pv_watts = float(settings['existingPvWatts'])
+    pv_boosts = settings['pvBoost']
+    multi_boost = len(pv_boosts) > 1
+
     print(f"Username: {sunsynk_username}")
     print(
         f"showDays:{settings['showDays']}  "
@@ -378,6 +556,15 @@ async def main():
         f"scanFromYear:{scan_from_year}"
     )
     print(f"originalPrice:£{original_price}")
+    print(f"existingPvWatts:{existing_pv_watts:.0f}")
+    if multi_boost:
+        print(f"PV boost options: {len(pv_boosts)}")
+        for b in pv_boosts:
+            clip = f"{b['inverterClipW']:.0f}W" if b['inverterClipW'] else "none"
+            print(
+                f"  {b['label']}: +{b['addWatts']:.0f}W  £{b['cost']:.2f}  "
+                f"clip:{clip}  (PV +{b['pv_extra_ratio']*100:.1f}%)"
+            )
     if multi_battery:
         print(f"Virtual battery configs: {len(battery_configs)}")
         for bc in battery_configs:
@@ -411,137 +598,153 @@ async def main():
             await client.get_inverter_realtime_input(inverter.sn)
             await client.get_inverter_realtime_output(inverter.sn)
 
-            all_battery_results = []  # list of (label, list[EnergyPrices])
 
-            # Raw data caches: populated on the first battery×price pass, reused on all others.
-            # EnergyMonth and EnergyDay (parse-only, no battery) are tariff-window-keyed and
-            # shared across all battery configs. Battery simulation is replayed per config using
-            # pre-parsed interval tuples stored in the EnergyDay, eliminating all strptime overhead.
+            # Raw data caches: shared across every PV-boost × battery × price pass.
+            # EnergyMonth is tariff-window-keyed; EnergyDay (parse-only, no battery) is keyed
+            # by tariff window + PV-boost scale. Battery simulation is replayed per config from
+            # the EnergyDay's pre-parsed interval tuples, eliminating all strptime overhead.
             _month_cache: dict = {}      # monthtocheck → EnergyMonth
             _day_raw_cache: dict = {}    # date_str → raw day dict
-            _energyday_cache: dict = {}  # f"{date}|{opstart}|{opstop}" → parse-only EnergyDay
+            _energyday_cache: dict = {}  # "{date}|{opstart}|{opstop}|{ratio}|{clip}" -> EnergyDay
             _cache_misses = 0
             _cache_hits = 0
 
-            for battery_config in battery_configs:
-                bc_label = battery_config.get('label', '')
-                if not bc_label and multi_battery:
-                    bc_label = f"{battery_config['batterySize']}Wh"
-                battery_enabled = bool(
-                    re.match('^on', str(battery_config['enabled']), re.IGNORECASE)
-                )
+            all_boost_results = []  # list of (boost, all_battery_results)
 
-                all_prices = []
+            for boost in pv_boosts:
+                pv_extra_ratio = boost['pv_extra_ratio']
+                pv_extra_clip_w = boost['inverterClipW']
+                if multi_boost:
+                    print(f"\n{'═' * 60}")
+                    print(f"  PV boost pass: {boost['label']}  (+{boost['addWatts']:.0f}W)")
+                    print('═' * 60)
 
-                for price_file in energy_prices_files:
-                    prices_filename = "inverterData/" + price_file
+                all_battery_results = []  # list of (label, list[EnergyPrices])
 
-                    try:
-                        with open(prices_filename, encoding='utf-8') as data_file:
-                            print(f"Loading: {prices_filename}")
-                            energy_prices_data = json.load(data_file)
-                    except Exception as e:
-                        print(e)
-                        sys.exit(-1)
-
-                    pf_label = os.path.splitext(os.path.basename(price_file))[0]
-                    if multi_battery and len(energy_prices_files) > 1:
-                        label = f"{bc_label} / {pf_label}"
-                    elif multi_battery:
-                        label = bc_label
-                    else:
-                        label = pf_label
-
-                    tmp_price = PriceData()
-                    battery = _make_battery(battery_config, tmp_price)
-                    prices = EnergyPrices(
-                        energy_prices_data, battery,
-                        original_price=original_price, label=label,
-                        off_peak_baseline_kwh=float(settings['offPeakBaseline']),
-                        off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
-                        battery_enabled=battery_enabled,
-                        battery_price=float(battery_config['batteryPrice']),
+                for battery_config in battery_configs:
+                    bc_label = battery_config.get('label', '')
+                    if not bc_label and multi_battery:
+                        bc_label = f"{battery_config['batterySize']}Wh"
+                    battery_enabled = bool(
+                        re.match('^on', str(battery_config['enabled']), re.IGNORECASE)
                     )
 
-                    current_month = datetime.today().strftime('%Y-%m')
-                    total_months = (
-                        (int(current_month[:4]) - scan_from_year) * 12
-                        + int(current_month[5:7])
-                    )
-                    hasyear = True
-                    yearcount = scan_from_year
-                    process_date = not start_date
+                    all_prices = []
 
-                    with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
-                        while hasyear and yearcount < 2040:
-                            hasyear = False
-                            count = 1
-                            while count < 13:
-                                monthtocheck = f'{yearcount}-{count:02d}'
-                                if monthtocheck > current_month:
-                                    break
-                                pbar.set_description(monthtocheck)
-                                if monthtocheck not in _month_cache:
-                                    _month_cache[monthtocheck] = await client.get_energy_month(
-                                        inverter.plant.id, monthtocheck
-                                    )
-                                energymonth = _month_cache[monthtocheck]
-                                pbar.update(1)
+                    for price_file in energy_prices_files:
+                        prices_filename = "inverterData/" + price_file
 
-                                items = energymonth.get_load()
+                        try:
+                            with open(prices_filename, encoding='utf-8') as data_file:
+                                print(f"Loading: {prices_filename}")
+                                energy_prices_data = json.load(data_file)
+                        except Exception as e:
+                            print(e)
+                            sys.exit(-1)
 
-                                if items is not None:
-                                    for day in items['records']:
-                                        hasyear = True
-                                        prices.check_date(day['time'])
+                        pf_label = os.path.splitext(os.path.basename(price_file))[0]
+                        if multi_battery and len(energy_prices_files) > 1:
+                            label = f"{bc_label} / {pf_label}"
+                        elif multi_battery:
+                            label = bc_label
+                        else:
+                            label = pf_label
 
-                                        check_date = datetime.strptime(day['time'], "%Y-%m-%d")
-                                        if start_date:
-                                            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                                            if check_date > start_dt:
-                                                process_date = True
+                        tmp_price = PriceData()
+                        battery = _make_battery(battery_config, tmp_price)
+                        prices = EnergyPrices(
+                            energy_prices_data, battery,
+                            original_price=original_price, label=label,
+                            off_peak_baseline_kwh=float(settings['offPeakBaseline']),
+                            off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
+                            battery_enabled=battery_enabled,
+                            battery_price=float(battery_config['batteryPrice']),
+                        )
 
-                                        if stop_date:
-                                            stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
-                                            if check_date > stop_dt:
-                                                process_date = False
+                        current_month = datetime.today().strftime('%Y-%m')
+                        total_months = (
+                            (int(current_month[:4]) - scan_from_year) * 12
+                            + int(current_month[5:7])
+                        )
+                        hasyear = True
+                        yearcount = scan_from_year
+                        process_date = not start_date
 
-                                        if process_date:
-                                            if show_days:
-                                                print(f"Calculating: {day['time']}")
+                        with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
+                            while hasyear and yearcount < 2040:
+                                hasyear = False
+                                count = 1
+                                while count < 13:
+                                    monthtocheck = f'{yearcount}-{count:02d}'
+                                    if monthtocheck > current_month:
+                                        break
+                                    pbar.set_description(monthtocheck)
+                                    if monthtocheck not in _month_cache:
+                                        _month_cache[monthtocheck] = await client.get_energy_month(
+                                            inverter.plant.id, monthtocheck
+                                        )
+                                    energymonth = _month_cache[monthtocheck]
+                                    pbar.update(1)
 
-                                            offpeakstart = prices.price_data.current_off_peak_start
-                                            offpeakstop = prices.price_data.current_off_peak_stop
-                                            ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}"
+                                    items = energymonth.get_load()
 
-                                            if ed_key not in _energyday_cache:
-                                                if day['time'] not in _day_raw_cache:
-                                                    _cache_misses += 1
-                                                    _day_raw_cache[day['time']] = await client.get_energy_day_raw(
-                                                        inverter.plant.id, day['time']
+                                    if items is not None:
+                                        for day in items['records']:
+                                            hasyear = True
+                                            prices.check_date(day['time'])
+
+                                            check_date = datetime.strptime(day['time'], "%Y-%m-%d")
+                                            if start_date:
+                                                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                                                if check_date > start_dt:
+                                                    process_date = True
+
+                                            if stop_date:
+                                                stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
+                                                if check_date > stop_dt:
+                                                    process_date = False
+
+                                            if process_date:
+                                                if show_days:
+                                                    print(f"Calculating: {day['time']}")
+
+                                                offpeakstart = prices.price_data.current_off_peak_start
+                                                offpeakstop = prices.price_data.current_off_peak_stop
+                                                ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|{pv_extra_clip_w}"
+
+                                                if ed_key not in _energyday_cache:
+                                                    if day['time'] not in _day_raw_cache:
+                                                        _cache_misses += 1
+                                                        _day_raw_cache[day['time']] = await client.get_energy_day_raw(
+                                                            inverter.plant.id, day['time']
+                                                        )
+                                                    _energyday_cache[ed_key] = EnergyDay(
+                                                        _day_raw_cache[day['time']]['data'],
+                                                        day['time'], energymonth,
+                                                        None, offpeakstart, offpeakstop,
+                                                        pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
                                                     )
-                                                _energyday_cache[ed_key] = EnergyDay(
-                                                    _day_raw_cache[day['time']]['data'],
-                                                    day['time'], energymonth,
-                                                    None, offpeakstart, offpeakstop
-                                                )
-                                            else:
-                                                _cache_hits += 1
+                                                else:
+                                                    _cache_hits += 1
 
-                                            energyday = _energyday_cache[ed_key]
-                                            energyday.run_battery(prices.battery)
-                                            prices.add_data(energyday)
+                                                energyday = _energyday_cache[ed_key]
+                                                energyday.run_battery(prices.battery)
+                                                prices.add_data(energyday)
 
-                                            if show_days:
-                                                energyday.print()
+                                                if show_days:
+                                                    energyday.print()
 
-                                count += 1
-                            yearcount += 1
+                                    count += 1
+                                yearcount += 1
 
-                    prices.get_grand_totals()
-                    all_prices.append(prices)
+                        prices.get_grand_totals()
+                        all_prices.append(prices)
 
-                all_battery_results.append((bc_label, all_prices))
+                    all_battery_results.append((bc_label, all_prices))
+
+                all_boost_results.append((boost, all_battery_results))
+
+            all_battery_results = all_boost_results[0][1]  # baseline drives the main report
 
             print(f"[cache] day files: {_cache_misses} loaded from disk, {_cache_hits} served from memory cache")
 
@@ -582,6 +785,9 @@ async def main():
             if len(energy_prices_files) > 1:
                 _print_comparison(all_battery_results[0][1])
 
+            if multi_boost:
+                _print_pv_boost_comparison(all_boost_results, existing_pv_watts)
+
     sys.stdout = sys.__stdout__
 
     # Append raw config files to the results file only (not stdout)
@@ -601,4 +807,5 @@ async def main():
     print(f"Results saved: {_results_path}")
 
 
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
