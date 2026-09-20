@@ -101,6 +101,12 @@ def _parse_cli_args(argv):
             overrides.setdefault('virtualBattery', {})['batteryPrice'] = float(value)
         elif key_lower == 'description':
             overrides['description'] = value
+        elif key_lower == 'outputpath':
+            overrides['outputPath'] = value
+        elif key_lower == 'rollingwindow':
+            overrides['rollingWindow'] = int(value)
+        elif key_lower == 'plotlycdn':
+            overrides['plotlyCdn'] = value
     return config_path, overrides
 
 
@@ -131,6 +137,9 @@ def _load_settings(argv):
         'offPeakShift': 'ON',
         'offPeakBaseline': 0.96,
         'description': '',
+        'outputPath': '',        # graphs.py only: explicit output HTML path/filename
+        'rollingWindow': 4,      # graphs.py only: rolling-average window in days
+        'plotlyCdn': 'OFF',      # graphs.py only: OFF embeds plotly.js, ON loads from CDN
         'virtualBattery': {
             'enabled': 'ON',
             'batterySize': 5000,
@@ -247,6 +256,18 @@ def _print_usage():
     print("  maxOutputW:N            Maximum battery output in watts (e.g. 2400)")
     print("  dischargeReserveWh:N    Hold back N Wh until dischargeReserveUntil time (default: 0)")
     print("  dischargeReserveUntil:HH:MM  Release reserve for full discharge after this time (default: 17:00)")
+
+
+def _load_price_file(price_file: str) -> dict:
+    """Load a raw energy-prices JSON file from inverterData/, exiting on failure."""
+    prices_filename = "inverterData/" + price_file
+    try:
+        with open(prices_filename, encoding='utf-8') as data_file:
+            print(f"Loading: {prices_filename}")
+            return json.load(data_file)
+    except Exception as e:
+        print(e)
+        sys.exit(-1)
 
 
 def _make_battery(vb, price_data):
@@ -508,6 +529,116 @@ def _print_pv_boost_comparison(all_boost_results, existing_pv_watts, battery_idx
     print("  and DC-side losses are not modelled; payback uses historical tariff rates.")
 
 
+async def _iter_energy_days(client, inverter, prices: EnergyPrices,
+                             pv_extra_ratio: float, pv_extra_clip_w,
+                             start_date: str, stop_date: str, scan_from_year: int,
+                             show_days: bool,
+                             month_cache: dict, day_raw_cache: dict, energyday_cache: dict,
+                             cache_stats: dict):
+    """Async generator over one (battery, price-file, PV-boost) scenario's date range.
+
+    Fetches/caches EnergyMonth (month_cache) and raw day JSON (day_raw_cache) via
+    `client`; builds or reuses the EnergyDay for this pv_extra_ratio/pv_extra_clip_w
+    (energyday_cache, keyed as "{date}|{opstart}|{opstop}|{ratio}|{clip}"); calls
+    prices.check_date(date) to roll the tariff period/month forward, then
+    energyday.run_battery(prices.battery) and prices.add_data(energyday) — the same
+    side effects/order as a plain inline loop. cache_stats['hits']/['misses'] are
+    incremented in place so callers can accumulate counts across multiple passes.
+
+    Yields (date_str, energyday, battery_delta) per processed day in chronological
+    order, where battery_delta = {'charge_kwh', 'discharge_kwh', 'pv_charge_kwh',
+    'export_kwh'} is that single day's change in prices.battery's cumulative counters
+    (charge_amount/drawn/pv_input/exported), snapshotted immediately around the
+    run_battery() call. This must be captured per-day rather than diffed by the caller
+    across days: EnergyPrices._make_battery() replaces prices.battery with a fresh
+    VirtualBattery (counters reset to 0) whenever check_date() crosses into a new
+    tariff period, so a cross-day diff on the caller's side could span two different
+    battery instances and produce a bogus negative delta.
+    """
+    current_month = datetime.today().strftime('%Y-%m')
+    total_months = (
+        (int(current_month[:4]) - scan_from_year) * 12
+        + int(current_month[5:7])
+    )
+    hasyear = True
+    yearcount = scan_from_year
+    process_date = not start_date
+
+    with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
+        while hasyear and yearcount < 2040:
+            hasyear = False
+            count = 1
+            while count < 13:
+                monthtocheck = f'{yearcount}-{count:02d}'
+                if monthtocheck > current_month:
+                    break
+                pbar.set_description(monthtocheck)
+                if monthtocheck not in month_cache:
+                    month_cache[monthtocheck] = await client.get_energy_month(
+                        inverter.plant.id, monthtocheck
+                    )
+                energymonth = month_cache[monthtocheck]
+                pbar.update(1)
+
+                items = energymonth.get_load()
+
+                if items is not None:
+                    for day in items['records']:
+                        hasyear = True
+                        prices.check_date(day['time'])
+
+                        check_date = datetime.strptime(day['time'], "%Y-%m-%d")
+                        if start_date:
+                            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                            if check_date > start_dt:
+                                process_date = True
+
+                        if stop_date:
+                            stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
+                            if check_date > stop_dt:
+                                process_date = False
+
+                        if process_date:
+                            offpeakstart = prices.price_data.current_off_peak_start
+                            offpeakstop = prices.price_data.current_off_peak_stop
+                            ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|{pv_extra_clip_w}"
+
+                            if ed_key not in energyday_cache:
+                                if day['time'] not in day_raw_cache:
+                                    cache_stats['misses'] += 1
+                                    day_raw_cache[day['time']] = await client.get_energy_day_raw(
+                                        inverter.plant.id, day['time']
+                                    )
+                                energyday_cache[ed_key] = EnergyDay(
+                                    day_raw_cache[day['time']]['data'],
+                                    day['time'], energymonth,
+                                    None, offpeakstart, offpeakstop,
+                                    pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
+                                )
+                            else:
+                                cache_stats['hits'] += 1
+
+                            energyday = energyday_cache[ed_key]
+
+                            battery = prices.battery
+                            before = (battery.charge_amount, battery.drawn, battery.pv_input, battery.exported)
+                            energyday.run_battery(battery)
+                            after = (battery.charge_amount, battery.drawn, battery.pv_input, battery.exported)
+                            battery_delta = {
+                                'charge_kwh': (after[0] - before[0]) / 1000,
+                                'discharge_kwh': (after[1] - before[1]) / 1000,
+                                'pv_charge_kwh': (after[2] - before[2]) / 1000,
+                                'export_kwh': (after[3] - before[3]) / 1000,
+                            }
+
+                            prices.add_data(energyday)
+
+                            yield day['time'], energyday, battery_delta
+
+                count += 1
+            yearcount += 1
+
+
 async def main():
     if '--help' in sys.argv or '-h' in sys.argv:
         _print_usage()
@@ -606,8 +737,7 @@ async def main():
             _month_cache: dict = {}      # monthtocheck → EnergyMonth
             _day_raw_cache: dict = {}    # date_str → raw day dict
             _energyday_cache: dict = {}  # "{date}|{opstart}|{opstop}|{ratio}|{clip}" -> EnergyDay
-            _cache_misses = 0
-            _cache_hits = 0
+            _cache_stats = {'hits': 0, 'misses': 0}
 
             all_boost_results = []  # list of (boost, all_battery_results)
 
@@ -632,15 +762,7 @@ async def main():
                     all_prices = []
 
                     for price_file in energy_prices_files:
-                        prices_filename = "inverterData/" + price_file
-
-                        try:
-                            with open(prices_filename, encoding='utf-8') as data_file:
-                                print(f"Loading: {prices_filename}")
-                                energy_prices_data = json.load(data_file)
-                        except Exception as e:
-                            print(e)
-                            sys.exit(-1)
+                        energy_prices_data = _load_price_file(price_file)
 
                         pf_label = os.path.splitext(os.path.basename(price_file))[0]
                         if multi_battery and len(energy_prices_files) > 1:
@@ -661,81 +783,13 @@ async def main():
                             battery_price=float(battery_config['batteryPrice']),
                         )
 
-                        current_month = datetime.today().strftime('%Y-%m')
-                        total_months = (
-                            (int(current_month[:4]) - scan_from_year) * 12
-                            + int(current_month[5:7])
-                        )
-                        hasyear = True
-                        yearcount = scan_from_year
-                        process_date = not start_date
-
-                        with tqdm(total=total_months, unit='month', disable=show_days, dynamic_ncols=True) as pbar:
-                            while hasyear and yearcount < 2040:
-                                hasyear = False
-                                count = 1
-                                while count < 13:
-                                    monthtocheck = f'{yearcount}-{count:02d}'
-                                    if monthtocheck > current_month:
-                                        break
-                                    pbar.set_description(monthtocheck)
-                                    if monthtocheck not in _month_cache:
-                                        _month_cache[monthtocheck] = await client.get_energy_month(
-                                            inverter.plant.id, monthtocheck
-                                        )
-                                    energymonth = _month_cache[monthtocheck]
-                                    pbar.update(1)
-
-                                    items = energymonth.get_load()
-
-                                    if items is not None:
-                                        for day in items['records']:
-                                            hasyear = True
-                                            prices.check_date(day['time'])
-
-                                            check_date = datetime.strptime(day['time'], "%Y-%m-%d")
-                                            if start_date:
-                                                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                                                if check_date > start_dt:
-                                                    process_date = True
-
-                                            if stop_date:
-                                                stop_dt = datetime.strptime(stop_date, "%Y-%m-%d")
-                                                if check_date > stop_dt:
-                                                    process_date = False
-
-                                            if process_date:
-                                                if show_days:
-                                                    print(f"Calculating: {day['time']}")
-
-                                                offpeakstart = prices.price_data.current_off_peak_start
-                                                offpeakstop = prices.price_data.current_off_peak_stop
-                                                ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|{pv_extra_clip_w}"
-
-                                                if ed_key not in _energyday_cache:
-                                                    if day['time'] not in _day_raw_cache:
-                                                        _cache_misses += 1
-                                                        _day_raw_cache[day['time']] = await client.get_energy_day_raw(
-                                                            inverter.plant.id, day['time']
-                                                        )
-                                                    _energyday_cache[ed_key] = EnergyDay(
-                                                        _day_raw_cache[day['time']]['data'],
-                                                        day['time'], energymonth,
-                                                        None, offpeakstart, offpeakstop,
-                                                        pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
-                                                    )
-                                                else:
-                                                    _cache_hits += 1
-
-                                                energyday = _energyday_cache[ed_key]
-                                                energyday.run_battery(prices.battery)
-                                                prices.add_data(energyday)
-
-                                                if show_days:
-                                                    energyday.print()
-
-                                    count += 1
-                                yearcount += 1
+                        async for date_str, energyday, _battery_delta in _iter_energy_days(
+                                client, inverter, prices, pv_extra_ratio, pv_extra_clip_w,
+                                start_date, stop_date, scan_from_year, show_days,
+                                _month_cache, _day_raw_cache, _energyday_cache, _cache_stats):
+                            if show_days:
+                                print(f"Calculating: {date_str}")
+                                energyday.print()
 
                         prices.get_grand_totals()
                         all_prices.append(prices)
@@ -746,7 +800,7 @@ async def main():
 
             all_battery_results = all_boost_results[0][1]  # baseline drives the main report
 
-            print(f"[cache] day files: {_cache_misses} loaded from disk, {_cache_hits} served from memory cache")
+            print(f"[cache] day files: {_cache_stats['misses']} loaded from disk, {_cache_stats['hits']} served from memory cache")
 
             # Print results: solar/tariff output once (first battery config), battery per config
             first_battery = True

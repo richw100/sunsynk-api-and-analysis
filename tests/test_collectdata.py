@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 from analysis.collectdata import (
@@ -5,7 +7,12 @@ from analysis.collectdata import (
     _load_settings,
     _normalize_pv_boosts,
     _pv_boost_metrics,
+    _iter_energy_days,
+    _make_battery,
 )
+from analysis.energyprices import EnergyPrices
+from analysis.pricedata import PriceData
+from tests.mock_api_server import MockApiServer
 
 MISSING_CONFIG = 'config:/nonexistent/does-not-exist.json'
 
@@ -164,3 +171,68 @@ def test_pv_boost_metrics_negative_saving_gives_na_payback():
     assert m[1]['total_extra'] < 0
     assert m[1]['payback'] is None
     assert m[1]['clip_pct'] == 0.0
+
+
+# ─── _iter_energy_days ────────────────────────────────────────────────────
+
+_ITER_TEST_PRICES = {
+    'data': {
+        'prices': [
+            {
+                'datefrom': '2020-01-01',
+                'dateto': '2030-12-31',
+                'offpeakRate': '0.10',
+                'offpeakStart': '00:00',
+                'offpeakStop': '06:00',
+                'peakRate': '0.30',
+                'exportRate': '0.15',
+                'standingCharge': '0.60',
+                'InterestRate': '3.7',
+            },
+        ]
+    }
+}
+
+_ITER_TEST_BATTERY_CONFIG = {
+    'enabled': 'ON', 'batterySize': 5000, 'usePV': 'OFF',
+    'startCharge': 1000, 'stopCharge': 2000,
+    'exportWindowStart': '17:00', 'exportWindowStop': '19:00',
+    'useExport': 'OFF', 'dischargeEfficiency': 0.92, 'pvChargeEfficiency': 0.96,
+    'maxOutputW': 2400, 'chargeEfficiency': 1.0, 'gridCharge': 'ON',
+    'dischargeReserveWh': 0, 'dischargeReserveUntil': '17:00',
+}
+
+
+@pytest.mark.asyncio
+async def test_iter_energy_days_yields_match_add_data_calls(aiohttp_client, tmp_path, monkeypatch):
+    # Regression guard for the collectdata.py refactor that extracted _iter_energy_days
+    # out of main()'s inline day-processing loop: every yielded day must correspond to
+    # exactly one prices.add_data() call (grand_totals['days'] tracks add_data calls),
+    # and each yield must carry a battery_delta dict for that single day.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'inverterData').mkdir()
+
+    mock_api_server = MockApiServer(aiohttp_client)
+    client = await mock_api_server.energy_client()
+    inverter = (await client.get_inverters())[0]
+
+    battery = _make_battery(_ITER_TEST_BATTERY_CONFIG, PriceData())
+    prices = EnergyPrices(_ITER_TEST_PRICES, battery, original_price=6000)
+
+    current_year = datetime.now().year
+    month_cache, day_raw_cache, energyday_cache = {}, {}, {}
+    cache_stats = {'hits': 0, 'misses': 0}
+
+    yielded = []
+    async for date_str, energyday, battery_delta in _iter_energy_days(
+            client, inverter, prices, 0.0, None,
+            '', '', current_year, True,
+            month_cache, day_raw_cache, energyday_cache, cache_stats):
+        yielded.append((date_str, energyday, battery_delta))
+
+    assert len(yielded) > 0
+    assert all(d in ('2025-06-10', '2025-06-11') for d, _, _ in yielded)
+    for _, _, delta in yielded:
+        assert set(delta.keys()) == {'charge_kwh', 'discharge_kwh', 'pv_charge_kwh', 'export_kwh'}
+
+    assert prices.get_grand_totals()['days'] == len(yielded)
