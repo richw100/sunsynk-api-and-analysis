@@ -5,7 +5,7 @@ from analysis.energysummary import EnergySummary, EnergySummaryAggregator, Query
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices
-from analysis.energyday import EnergyDay
+from analysis.energyday import EnergyDay, ExportCorrection, _fill_gaps
 
 
 def make_price_data(peak=0.30, offpeak=0.10, export=0.15,
@@ -655,3 +655,66 @@ def test_energyday_pv_extra_clip_caps_generation_and_reports_loss():
     # loss = Σ max(0, ratio*PV - clip)/12  over 08:00 (1000→200) and 12:00 (2000→1200)
     assert clipped.get_pv_clip_loss() == pytest.approx((200 + 1200) / 12)
     assert unclipped.get_pv_clip_loss() == 0.0
+
+
+# ─── gap filling & export correction ─────────────────────────────────────────
+
+def _rec(time, value):
+    return {'time': time, 'value': str(float(value))}
+
+
+def test_fill_gaps_forward_fills_dropped_5min_samples():
+    records = [_rec('10:20', 3), _rec('10:00', 1), _rec('10:05', 2)]   # unsorted, 15-min gap
+    filled = _fill_gaps(records)
+    assert [(r['time'], r['value']) for r in filled] == [
+        ('10:00', '1.0'), ('10:05', '2.0'), ('10:10', '2.0'), ('10:15', '2.0'), ('10:20', '3.0')]
+    assert [r['time'] for r in records] == ['10:20', '10:00', '10:05']   # input untouched
+
+
+def test_fill_gaps_leaves_long_gaps_and_regular_series_alone():
+    hourly = [_rec('08:00', 1), _rec('09:00', 2)]
+    assert _fill_gaps(hourly) == hourly
+    regular = [_rec('08:00', 1), _rec('08:05', 2)]
+    assert _fill_gaps(regular) == regular
+    assert [r['time'] for r in _fill_gaps([_rec('08:00', 1), _rec('08:30', 2)])] == \
+        ['08:00', '08:05', '08:10', '08:15', '08:20', '08:25', '08:30']
+
+
+def test_export_correction_default_matches_original_2_3wh_rule():
+    assert ExportCorrection().split(10.0) == pytest.approx((7.7, 2.3))
+    assert ExportCorrection().split(1.0) == pytest.approx((0.0, 1.0))   # standby capped at export
+
+
+def test_export_correction_gain_and_standby():
+    export, standby = ExportCorrection(gain=0.95, standby_w=12).split(20.0)
+    assert standby == pytest.approx(1.0)            # 12 W for 5 minutes
+    assert export == pytest.approx(20.0 * 0.95 - 1.0)
+    assert ExportCorrection(gain=0.9, standby_w=0).split(10.0) == pytest.approx((9.0, 0.0))
+
+
+def test_energyday_export_correction_gain_not_credited_to_import():
+    # Grid: +500 W at 00:00 (off-peak), -200 W at 08:00 and -1500 W at 12:00 (peak export).
+    gain_only = EnergyDay(_boost_day_data(), '2025-06-10', _FakeMonth(), None, '00:00', '06:00',
+                          export_correction=ExportCorrection(gain=0.5, standby_w=0))
+    assert gain_only.get_calc_export() == pytest.approx(0.5 * (200 + 1500) / 12)
+    assert gain_only.get_calc_import() == pytest.approx((500 + 100) / 12)   # import untouched
+
+    standby = EnergyDay(_boost_day_data(), '2025-06-10', _FakeMonth(), None, '00:00', '06:00',
+                        export_correction=ExportCorrection(gain=1.0, standby_w=12))
+    assert standby.get_calc_export() == pytest.approx((200 + 1500) / 12 - 2 * 1.0)
+    assert standby.get_calc_import() == pytest.approx((500 + 100) / 12 - 2 * 1.0)  # standby = house load
+
+
+def test_energyday_run_battery_uses_export_correction():
+    charged = []
+
+    class _Battery:
+        def recharge(self): pass
+        def utilise(self, wh, t): return 0
+        def pv_charge(self, wh, t): charged.append(wh)
+        def set_ran_out(self): pass
+
+    day = EnergyDay(_boost_day_data(), '2025-06-10', _FakeMonth(), None, '00:00', '06:00',
+                    export_correction=ExportCorrection(gain=0.5, standby_w=12))
+    day.run_battery(_Battery())
+    assert charged == pytest.approx([0.5 * 200 / 12 - 1.0, 0.5 * 1500 / 12 - 1.0])

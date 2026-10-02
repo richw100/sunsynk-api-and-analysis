@@ -8,6 +8,12 @@
     "_commentOriginalPrice": "Original price = £6210 Take off £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)",
     "offPeakShift": "ON",
     "offPeakBaseline": 0.96,
+    "exportCorrection": {
+        "_comment": "Calibrated vs Fuse smart meter 7 Aug-30 Sep 2026: inverter CT over-reads export ~4.7% (gain); EV charger standby ~11 W while exporting, charger off 6-25 Aug",
+        "gain": 0.953,
+        "chargerStandbyW": 11,
+        "chargerOff": [["2026-08-06", "2026-08-25"]]
+    },
     "virtualBattery": [
         {
             "label": "Grid charge, PV only",

@@ -1,4 +1,5 @@
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from sunsynk.resource import Resource
 from analysis.energysummary import QueryType
@@ -6,12 +7,63 @@ from analysis.virtualbattery import VirtualBattery
 from analysis.energymonth import EnergyMonth
 
 
+INTERVAL_MIN = 5          # Sunsynk day records are nominally 5 minutes apart
+MAX_FILL_GAP_MIN = 30     # gaps up to this are dropped samples; larger ones are left alone
+
+
+def _fill_gaps(records: list, max_gap_min: int = MAX_FILL_GAP_MIN) -> list:
+    """Return records sorted by time with dropped 5-minute samples forward-filled.
+
+    The Sunsynk API omits a few samples a day (10-20 minute gaps); since every
+    record is treated as 5 minutes of energy (value/12), a missing one would
+    otherwise count as zero and under-count every total by ~2.5%. Gaps longer
+    than ``max_gap_min`` (e.g. coarse test fixtures) are not filled. The input
+    list and its dicts are not mutated.
+    """
+    ordered = sorted(records, key=lambda r: r['time'])
+    filled = []
+    for i, rec in enumerate(ordered):
+        filled.append(rec)
+        if i + 1 == len(ordered):
+            break
+        t = datetime.strptime(rec['time'], "%H:%M")
+        gap = (datetime.strptime(ordered[i + 1]['time'], "%H:%M") - t).seconds // 60
+        if INTERVAL_MIN < gap <= max_gap_min:
+            for k in range(1, gap // INTERVAL_MIN):
+                slot = (t + timedelta(minutes=k * INTERVAL_MIN)).strftime("%H:%M")
+                filled.append({**rec, 'time': slot})
+    return filled
+
+
+@dataclass
+class ExportCorrection:
+    """How measured export (negative Grid samples) is adjusted before use.
+
+    ``gain`` scales the inverter's export reading toward the supplier's meter
+    (the inverter CT over-reads; the shortfall is simply lost, never credited).
+    ``standby_w`` is a load between the inverter CT and the meter (EV charger
+    standby) that PV covers while exporting: it is removed from export and
+    credited as self-consumed load (subtracted from import), as before.
+    Defaults (1.0, 27.6 W = 2.3 Wh per 5 min) reproduce the original fixed rule.
+    """
+    gain: float = 1.0
+    standby_w: float = 27.6
+
+    def split(self, export_wh: float) -> tuple:
+        """(corrected export Wh, standby Wh credited as load) for one 5-minute sample."""
+        exported = export_wh * self.gain
+        standby = min(exported, self.standby_w / 12)
+        return exported - standby, standby
+
+
 class IntervalSummary(Resource):
     """Accumulates peak/offpeak Wh totals from 5-minute interval records for one label."""
 
     def __init__(self, data, battery: VirtualBattery = None,
-                 offpeakstart="00:00", offpeakstop="00:07", is_load: bool = False):
+                 offpeakstart="00:00", offpeakstop="00:07", is_load: bool = False,
+                 export_correction: ExportCorrection = None):
         self.label = data['label']
+        self._correction = export_correction or ExportCorrection()
         self.records = data['records']
         self.peak = 0
         self.peakexport = 0
@@ -51,9 +103,9 @@ class IntervalSummary(Resource):
         if value > 0:
             self.offpeak += value
         else:
-            extra_load = min(-value, 2.3)
-            self.offpeakexport += -value - extra_load
-            self.offpeak -= extra_load
+            export, standby = self._correction.split(-value)
+            self.offpeakexport += export
+            self.offpeak -= standby
         return recharged
 
     def _process_peak_record(self, value, time, battery: VirtualBattery, is_load: bool) -> bool:
@@ -62,10 +114,9 @@ class IntervalSummary(Resource):
             if battery is not None and is_load:
                 return battery.utilise(value, time) > 0
         else:
-            extra_load = min(-value, 2.3)
-            export = -value - extra_load
+            export, standby = self._correction.split(-value)
             self.peakexport += export
-            self.peak -= extra_load
+            self.peak -= standby
             if battery is not None and is_load:
                 battery.pv_charge(export, time)
         return False
@@ -74,9 +125,14 @@ class IntervalSummary(Resource):
 class EnergyDay(Resource):
     def __init__(self, data, date: str, month: EnergyMonth, battery: VirtualBattery,
                  offpeakstart: str, offpeakstop: str,
-                 pv_extra_ratio: float = 0.0, pv_extra_clip_w=None):
+                 pv_extra_ratio: float = 0.0, pv_extra_clip_w=None,
+                 export_correction: ExportCorrection = None):
         self.data = data
-        energy = self.data['infos']
+        self.export_correction = export_correction or ExportCorrection()
+        # Gap-filled copies of the PV/Grid/Load series; self.data is never mutated.
+        energy = [{**item, 'records': _fill_gaps(item['records'])}
+                  if item['label'] in ("PV", "Grid", "Load") else item
+                  for item in self.data['infos']]
         self._start_dt = datetime.strptime(offpeakstart, "%H:%M")
         self._stop_dt = datetime.strptime(offpeakstop, "%H:%M")
 
@@ -111,7 +167,8 @@ class EnergyDay(Resource):
             if item['label'] == "PV":
                 self.pv = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop)
             elif item['label'] == "Grid":
-                self.grid = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop, is_load=True)
+                self.grid = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop, is_load=True,
+                                            export_correction=self.export_correction)
             elif item['label'] == "Load":
                 self.load = IntervalSummary(item, battery, offpeakstart, offpeakstop)
 
@@ -134,8 +191,7 @@ class EnergyDay(Resource):
                     if battery.utilise(wh, time_dt) > 0:
                         battery_ran_out = True
                 else:
-                    extra_load = min(-wh, 2.3)
-                    battery.pv_charge(-wh - extra_load, time_dt)
+                    battery.pv_charge(self.export_correction.split(-wh)[0], time_dt)
         if battery_ran_out:
             battery.set_ran_out()
 

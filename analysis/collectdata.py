@@ -9,7 +9,7 @@ sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
 from analysis.energy_client import SunsynkEnergyClient
-from analysis.energyday import EnergyDay
+from analysis.energyday import EnergyDay, ExportCorrection
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices, _battery_warnings
@@ -107,6 +107,10 @@ def _parse_cli_args(argv):
             overrides['rollingWindow'] = int(value)
         elif key_lower == 'plotlycdn':
             overrides['plotlyCdn'] = value
+        elif key_lower == 'exportgain':
+            overrides.setdefault('exportCorrection', {})['gain'] = float(value)
+        elif key_lower == 'chargerstandbyw':
+            overrides.setdefault('exportCorrection', {})['chargerStandbyW'] = float(value)
     return config_path, overrides
 
 
@@ -123,6 +127,7 @@ def _load_settings(argv):
         print(f"Config: {config_path} not found, using defaults")
 
     vb_override = overrides.pop('virtualBattery', {})
+    ec_override = overrides.pop('exportCorrection', {})
     pv_boost_cli = overrides.pop('pvBoostCli', {})
     settings.update(overrides)
 
@@ -162,6 +167,13 @@ def _load_settings(argv):
     for key, value in defaults.items():
         settings.setdefault(key, value)
 
+    # exportCorrection: defaults reproduce the original fixed 2.3 Wh/5-min deduction.
+    ec = dict(settings.get('exportCorrection') or {})
+    for key, value in EXPORT_CORRECTION_DEFAULTS.items():
+        ec.setdefault(key, value)
+    ec.update(ec_override)
+    settings['exportCorrection'] = ec
+
     # Fill missing virtualBattery sub-keys; support both a single config dict and a list.
     # CLI overrides (vb_override) are applied to every config to allow temporary adjustments.
     vb_defaults = defaults['virtualBattery']
@@ -182,6 +194,23 @@ def _load_settings(argv):
 
     settings['_configPath'] = config_path
     return settings
+
+
+EXPORT_CORRECTION_DEFAULTS = {'gain': 1.0, 'chargerStandbyW': 27.6, 'chargerOff': []}
+
+
+def _export_correction_for(date: str, cfg: dict) -> ExportCorrection:
+    """ExportCorrection for one 'YYYY-MM-DD' date: the charger standby draw is 0 on
+    dates inside any inclusive [from, to] range in cfg['chargerOff']."""
+    charger_off = any(start <= date <= stop for start, stop in cfg.get('chargerOff') or [])
+    return ExportCorrection(gain=float(cfg['gain']),
+                            standby_w=0.0 if charger_off else float(cfg['chargerStandbyW']))
+
+
+def _describe_export_correction(cfg: dict) -> str:
+    off = ', '.join(f'{a}..{b}' for a, b in cfg.get('chargerOff') or [])
+    return (f"Export correction: gain {float(cfg['gain']):g}, "
+            f"charger standby {float(cfg['chargerStandbyW']):g} W" + (f" (off {off})" if off else ""))
 
 
 def _normalize_pv_boosts(raw, existing_pv_watts: float, cli: dict) -> list:
@@ -232,6 +261,12 @@ def _print_usage():
     print("  originalPrice:N         Installation cost for ROI calculation")
     print("  offPeakShift:ON|OFF     Include off-peak load-shifting in savings totals (default: ON)")
     print("  offPeakBaseline:N       Expected kWh/day at off-peak for a 7-hour window (default: 0.96)")
+    print("")
+    print("Export correction (calibrate inverter export to the supplier's meter):")
+    print("  exportGain:N            Scale inverter export readings (default: 1.0)")
+    print("  chargerStandbyW:N       Load between inverter CT and meter, covered by PV while")
+    print("                          exporting and credited as house load (default: 27.6)")
+    print("  (config.json 'exportCorrection' also takes chargerOff: [[from, to], ...] date ranges)")
     print("")
     print("Plug-in solar (PV boost) options:")
     print("  existingPvWatts:N       Current array size in W for scaling (default: 3115 = 7x445W)")
@@ -534,7 +569,7 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                              start_date: str, stop_date: str, scan_from_year: int,
                              show_days: bool,
                              month_cache: dict, day_raw_cache: dict, energyday_cache: dict,
-                             cache_stats: dict):
+                             cache_stats: dict, export_correction_cfg: dict = None):
     """Async generator over one (battery, price-file, PV-boost) scenario's date range.
 
     Fetches/caches EnergyMonth (month_cache) and raw day JSON (day_raw_cache) via
@@ -554,6 +589,9 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
     VirtualBattery (counters reset to 0) whenever check_date() crosses into a new
     tariff period, so a cross-day diff on the caller's side could span two different
     battery instances and produce a bogus negative delta.
+
+    `export_correction_cfg` (settings['exportCorrection']) is resolved per date by
+    _export_correction_for(); None means the ExportCorrection defaults.
     """
     current_month = datetime.today().strftime('%Y-%m')
     total_months = (
@@ -601,7 +639,10 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                         if process_date:
                             offpeakstart = prices.price_data.current_off_peak_start
                             offpeakstop = prices.price_data.current_off_peak_stop
-                            ed_key = f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|{pv_extra_clip_w}"
+                            correction = (_export_correction_for(day['time'], export_correction_cfg)
+                                          if export_correction_cfg else ExportCorrection())
+                            ed_key = (f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|"
+                                      f"{pv_extra_clip_w}|{correction.gain}|{correction.standby_w}")
 
                             if ed_key not in energyday_cache:
                                 if day['time'] not in day_raw_cache:
@@ -614,6 +655,7 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                                     day['time'], energymonth,
                                     None, offpeakstart, offpeakstop,
                                     pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
+                                    export_correction=correction,
                                 )
                             else:
                                 cache_stats['hits'] += 1
@@ -687,6 +729,7 @@ async def main():
         f"scanFromYear:{scan_from_year}"
     )
     print(f"originalPrice:£{original_price}")
+    print(_describe_export_correction(settings['exportCorrection']))
     print(f"existingPvWatts:{existing_pv_watts:.0f}")
     if multi_boost:
         print(f"PV boost options: {len(pv_boosts)}")
@@ -786,7 +829,8 @@ async def main():
                         async for date_str, energyday, _battery_delta in _iter_energy_days(
                                 client, inverter, prices, pv_extra_ratio, pv_extra_clip_w,
                                 start_date, stop_date, scan_from_year, show_days,
-                                _month_cache, _day_raw_cache, _energyday_cache, _cache_stats):
+                                _month_cache, _day_raw_cache, _energyday_cache, _cache_stats,
+                                settings['exportCorrection']):
                             if show_days:
                                 print(f"Calculating: {date_str}")
                                 energyday.print()

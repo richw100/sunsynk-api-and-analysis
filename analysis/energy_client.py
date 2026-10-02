@@ -29,11 +29,13 @@ class SunsynkEnergyClient(SunsynkClient):
 
     async def get_energy_day(self, plant_id: str, date: str, month: EnergyMonth,
                              battery: VirtualBattery, offpeakstart: str, offpeakstop: str,
-                             pv_extra_ratio: float = 0.0, pv_extra_clip_w=None) -> EnergyDay:
+                             pv_extra_ratio: float = 0.0, pv_extra_clip_w=None,
+                             export_correction=None) -> EnergyDay:
         return EnergyDay(
             (await self.get_energy_day_raw(plant_id, date))['data'],
             date, month, battery, offpeakstart, offpeakstop,
-            pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w
+            pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
+            export_correction=export_correction
         )
 
     async def get_energy_day_raw(self, plant_id: str, date: str) -> dict:

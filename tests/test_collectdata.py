@@ -3,6 +3,8 @@ from datetime import datetime
 import pytest
 
 from analysis.collectdata import (
+    _export_correction_for,
+    _describe_export_correction,
     _parse_cli_args,
     _load_settings,
     _normalize_pv_boosts,
@@ -236,3 +238,30 @@ async def test_iter_energy_days_yields_match_add_data_calls(aiohttp_client, tmp_
         assert set(delta.keys()) == {'charge_kwh', 'discharge_kwh', 'pv_charge_kwh', 'export_kwh'}
 
     assert prices.get_grand_totals()['days'] == len(yielded)
+
+
+# ─── exportCorrection ────────────────────────────────────────────────────────
+
+def test_export_correction_defaults_reproduce_original_rule():
+    ec = _load_settings([MISSING_CONFIG])['exportCorrection']
+    assert ec == {'gain': 1.0, 'chargerStandbyW': 27.6, 'chargerOff': []}
+    corr = _export_correction_for('2026-08-10', ec)
+    assert (corr.gain, corr.standby_w) == (1.0, 27.6)
+
+
+def test_export_correction_config_and_cli_overrides(tmp_path):
+    cfg = tmp_path / 'c.json'
+    cfg.write_text('{"exportCorrection": {"gain": 0.95, "chargerOff": [["2026-08-06", "2026-08-25"]]}}')
+    ec = _load_settings([f'config:{cfg}', 'chargerStandbyW:11'])['exportCorrection']
+    assert ec['gain'] == 0.95 and ec['chargerStandbyW'] == 11.0
+    assert _load_settings([f'config:{cfg}', 'exportGain:0.9'])['exportCorrection']['gain'] == 0.9
+    assert 'off 2026-08-06..2026-08-25' in _describe_export_correction(ec)
+
+
+def test_export_correction_for_charger_off_ranges_inclusive():
+    ec = {'gain': 0.953, 'chargerStandbyW': 11, 'chargerOff': [['2026-08-06', '2026-08-25']]}
+    assert _export_correction_for('2026-08-05', ec).standby_w == 11
+    assert _export_correction_for('2026-08-06', ec).standby_w == 0
+    assert _export_correction_for('2026-08-25', ec).standby_w == 0
+    assert _export_correction_for('2026-08-26', ec).standby_w == 11
+    assert _export_correction_for('2026-08-26', ec).gain == 0.953
