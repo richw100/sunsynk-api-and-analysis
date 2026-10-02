@@ -107,6 +107,8 @@ def _parse_cli_args(argv):
             overrides['rollingWindow'] = int(value)
         elif key_lower == 'plotlycdn':
             overrides['plotlyCdn'] = value
+        elif key_lower == 'fusedatadir':
+            overrides['fuseDataDir'] = value
         elif key_lower == 'exportgain':
             overrides.setdefault('exportCorrection', {})['gain'] = float(value)
         elif key_lower == 'chargerstandbyw':
@@ -145,6 +147,7 @@ def _load_settings(argv):
         'outputPath': '',        # graphs.py only: explicit output HTML path/filename
         'rollingWindow': 4,      # graphs.py only: rolling-average window in days
         'plotlyCdn': 'OFF',      # graphs.py only: OFF embeds plotly.js, ON loads from CDN
+        'fuseDataDir': 'fuseenergydata',  # graphs.py only: Fuse meter-export cache to overlay
         'virtualBattery': {
             'enabled': 'ON',
             'batterySize': 5000,

@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import re
 import sys
@@ -11,6 +12,7 @@ os.chdir(PROJECT_ROOT)
 import plotly.graph_objects as go
 
 from analysis.collectdata import _load_settings, _make_battery, _iter_energy_days, _load_price_file
+from analysis.fuse_client import load_daily_export_kwh, load_hourly_export_kwh
 from analysis.dailyseries import DailySeriesBuilder
 from analysis.energy_client import SunsynkEnergyClient
 from analysis.energyprices import EnergyPrices
@@ -37,6 +39,9 @@ def _print_usage():
     print("  outputPath:path.html   Explicit output file (default: results/_{timestamp}-graphs.html)")
     print("  rollingWindow:N        Rolling average window in days for the spend/net-cost charts (default: 4)")
     print("  plotlyCdn:ON|OFF       ON loads plotly.js from a CDN (smaller file); OFF embeds it (default: OFF)")
+    print("  fuseDataDir:DIR        Fuse Energy cache (from fusedata.py) overlaid as meter export on the")
+    print("                         energy-flows chart and (hourly) on the day-detail charts;")
+    print("                         skipped if empty (default: fuseenergydata)")
 
 
 def _resolve_output_path(settings: dict) -> str:
@@ -177,7 +182,10 @@ def _fig_payback_curve(rows: list) -> go.Figure:
     return fig
 
 
-def _fig_energy_flows(rows: list) -> go.Figure:
+def _fig_energy_flows(rows: list, fuse_export: dict = None) -> go.Figure:
+    """Daily PV/Load/Export/Import from the inverter. If ``fuse_export`` (date -> kWh,
+    from fuse_client.load_daily_export_kwh) is given, the smart-meter export the
+    supplier actually measured is overlaid as a dashed line for comparison."""
     dates = [r.date for r in rows]
 
     fig = go.Figure()
@@ -187,11 +195,151 @@ def _fig_energy_flows(rows: list) -> go.Figure:
                               mode='lines', line=dict(color=_ORANGE, width=1.5)))
     fig.add_trace(go.Scatter(x=dates, y=[r.export_kwh for r in rows], name='Export',
                               mode='lines', line=dict(color=_AQUA, width=1.5)))
+    if fuse_export:
+        fuse_dates = [d for d in sorted(fuse_export) if dates[0] <= d <= dates[-1]]
+        if fuse_dates:
+            fig.add_trace(go.Scatter(x=fuse_dates, y=[fuse_export[d] for d in fuse_dates],
+                                      name='Export (Fuse meter)', mode='lines',
+                                      line=dict(color=_AQUA, width=1.5, dash='dash')))
     fig.add_trace(go.Scatter(x=dates, y=[r.import_kwh for r in rows], name='Import',
                               mode='lines', line=dict(color=_YELLOW, width=1.5)))
     fig.update_layout(title='Daily energy flows (kWh)', hovermode='x unified')
     fig.update_xaxes(rangeslider_visible=True)
     return fig
+
+
+def _pick_unique_months(ranked: list, limit: int) -> list:
+    """Walk `ranked` (already sorted, best/worst first) picking at most one row per
+    calendar month (row.date[:7]), so a single unusually good/bad month can't take
+    every slot. Returns (rank, row) pairs — `rank` is the row's 1-indexed position in
+    `ranked` itself (not in the picked list), so a skipped-ahead pick like the 7th
+    still reads as '#7', not renumbered to '#3'."""
+    picked = []
+    seen_months = set()
+    for i, row in enumerate(ranked, start=1):
+        month = row.date[:7]
+        if month in seen_months:
+            continue
+        seen_months.add(month)
+        picked.append((i, row))
+        if len(picked) == limit:
+            break
+    return picked
+
+
+def _select_extreme_days(rows: list, key_func, n: int = 5) -> tuple:
+    """Rank days by key_func(row) and return (top_n, bottom_n): top_n descending
+    (highest first), bottom_n ascending (lowest first), each capped at one row per
+    calendar month. Each entry is a (rank, row) pair, rank being the day's true
+    position in the full ranking (1 = best for top_n, 1 = worst for bottom_n) —
+    preserved even when month-uniqueness skips over a higher/lower-ranked same-month day."""
+    ranked_desc = sorted(rows, key=key_func, reverse=True)
+    top_n = _pick_unique_months(ranked_desc, n)
+    bottom_n = _pick_unique_months(list(reversed(ranked_desc)), n)
+    return top_n, bottom_n
+
+
+def _select_extreme_roi_days(rows: list, n: int = 5) -> tuple:
+    """Rank days by their own contribution to ROI (savings_inc_seg, the same value the
+    ROI rate-of-change charts plot)."""
+    return _select_extreme_days(rows, key_func=lambda r: r.savings_inc_seg, n=n)
+
+
+def _interval_time_series(interval_summary) -> tuple:
+    """Return (times, values_w) sorted by time-of-day from an IntervalSummary's raw
+    records (5-minute resolution from the real API; coarser in test fixtures)."""
+    pairs = sorted(interval_summary.records, key=lambda r: r['time'])
+    times = [r['time'] for r in pairs]
+    values = [float(r['value']) for r in pairs]
+    return times, values
+
+
+def _grid_import_export_series(grid_summary) -> tuple:
+    """Split the signed Grid record series into (times, import_w, export_w):
+    positive readings are import (drawn from grid), negative are export (fed back)."""
+    pairs = sorted(grid_summary.records, key=lambda r: r['time'])
+    times = [r['time'] for r in pairs]
+    import_w = [max(float(r['value']), 0.0) for r in pairs]
+    export_w = [max(-float(r['value']), 0.0) for r in pairs]
+    return times, import_w, export_w
+
+
+def _fuse_hourly_series(hourly: list) -> tuple:
+    """Turn Fuse ``[(hour, kWh), ...]`` into (times, avg_w) for a step ('hv') trace on
+    the interval charts' 'HH:MM' category axis: each hour's kWh x 1000 is its average W.
+    A closing '23:55' point repeats the last value so the final hour's step is drawn."""
+    times = [f'{hour:02d}:00' for hour, _ in hourly]
+    watts = [kwh * 1000 for _, kwh in hourly]
+    if hourly and hourly[-1][0] == 23:
+        times.append('23:55')
+        watts.append(watts[-1])
+    return times, watts
+
+
+def _fig_day_interval_detail(energyday, title: str, fuse_hourly: list = None) -> go.Figure:
+    """One day's raw interval PV/Load/Export/Import power (W) across time-of-day —
+    the actual within-day shape, not just that day's kWh total. ``fuse_hourly``
+    (``[(hour, kWh)]`` from fuse_client.load_hourly_export_kwh) overlays the smart
+    meter's hourly export as an average-W step line."""
+    pv_times, pv_w = _interval_time_series(energyday.pv)
+    load_times, load_w = _interval_time_series(energyday.load)
+    grid_times, import_w, export_w = _grid_import_export_series(energyday.grid)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=pv_times, y=pv_w, name='PV', mode='lines',
+                              line=dict(color=_BLUE, width=1.5)))
+    fig.add_trace(go.Scatter(x=load_times, y=load_w, name='Load', mode='lines',
+                              line=dict(color=_ORANGE, width=1.5)))
+    fig.add_trace(go.Scatter(x=grid_times, y=export_w, name='Export', mode='lines',
+                              line=dict(color=_AQUA, width=1.5)))
+    if fuse_hourly:
+        fuse_times, fuse_w = _fuse_hourly_series(fuse_hourly)
+        fig.add_trace(go.Scatter(x=fuse_times, y=fuse_w, name='Export (Fuse meter, hourly avg)',
+                                  mode='lines', line=dict(color=_AQUA, width=2, dash='dash',
+                                                          shape='hv')))
+    fig.add_trace(go.Scatter(x=grid_times, y=import_w, name='Import', mode='lines',
+                              line=dict(color=_YELLOW, width=1.5)))
+    fig.update_layout(title=title, hovermode='x unified',
+                       xaxis_title='Time of day', yaxis_title='Power (W)')
+    return fig
+
+
+def _interval_detail_figures(ranked_rows: list, energyday_by_date: dict, label: str,
+                             fuse_hourly_lookup=None) -> list:
+    """Build one (title, figure) pair per (rank, row) pair — as returned by
+    _select_extreme_days — for days whose EnergyDay is available, in the given order.
+    `rank` (the day's true position in the full ranking, not its position in this
+    possibly month-deduplicated list) is shown in the title so '#7' still means what
+    it says against the whole date range. Shared by the top/bottom ROI-day and
+    top-spend-day charts — only the pre-ranked `ranked_rows` list (and its label) differs.
+    `fuse_hourly_lookup(date_str) -> [(hour, kWh)]`, if given, adds the Fuse meter overlay."""
+    figures = []
+    for rank, row in ranked_rows:
+        energyday = energyday_by_date.get(row.date)
+        if energyday is None:
+            continue
+        title = f'{label} #{rank}: {row.date} (5-minute interval detail)'
+        fuse_hourly = fuse_hourly_lookup(row.date) if fuse_hourly_lookup else None
+        figures.append((title, _fig_day_interval_detail(energyday, title, fuse_hourly)))
+    return figures
+
+
+def _top_roi_days_interval_figures(rows: list, energyday_by_date: dict, n: int = 5,
+                                      fuse_hourly_lookup=None) -> list:
+    top_n, _ = _select_extreme_roi_days(rows, n)
+    return _interval_detail_figures(top_n, energyday_by_date, 'Top ROI day', fuse_hourly_lookup)
+
+
+def _bottom_roi_days_interval_figures(rows: list, energyday_by_date: dict, n: int = 5,
+                                         fuse_hourly_lookup=None) -> list:
+    _, bottom_n = _select_extreme_roi_days(rows, n)
+    return _interval_detail_figures(bottom_n, energyday_by_date, 'Bottom ROI day', fuse_hourly_lookup)
+
+
+def _top_spend_days_interval_figures(rows: list, energyday_by_date: dict, n: int = 5,
+                                        fuse_hourly_lookup=None) -> list:
+    top_n, _ = _select_extreme_days(rows, key_func=lambda r: r.spend, n=n)
+    return _interval_detail_figures(top_n, energyday_by_date, 'Top spend day', fuse_hourly_lookup)
 
 
 def _fig_battery_daily(rows: list, battery_enabled: bool) -> go.Figure:
@@ -276,14 +424,17 @@ async def main():
         day_raw_cache: dict = {}
         energyday_cache: dict = {}
         cache_stats = {'hits': 0, 'misses': 0}
+        energyday_by_date: dict = {}  # date_str -> EnergyDay, for the interval-detail charts
 
         async for date_str, energyday, battery_delta in _iter_energy_days(
                 client, inverter, prices, pv_extra_ratio, pv_extra_clip_w,
                 start_date, stop_date, scan_from_year, show_days,
-                month_cache, day_raw_cache, energyday_cache, cache_stats):
+                month_cache, day_raw_cache, energyday_cache, cache_stats,
+                settings['exportCorrection']):
             if show_days:
                 print(f"Calculating: {date_str}")
             builder.add_day(date_str, energyday, prices.price_data, battery_delta)
+            energyday_by_date[date_str] = energyday
 
         print(f"[cache] day files: {cache_stats['misses']} loaded from disk, {cache_stats['hits']} served from memory cache")
 
@@ -291,6 +442,10 @@ async def main():
     if not rows:
         print("No days in range — nothing to graph.")
         return
+
+    fuse_export = load_daily_export_kwh(settings['fuseDataDir'])
+    if fuse_export:
+        print(f"Fuse export: {len(fuse_export)} days loaded from {settings['fuseDataDir']}")
 
     figures = [
         ('Daily spend', _fig_daily_spend(rows, rolling_window)),
@@ -300,9 +455,16 @@ async def main():
         ('ROI (%)', _fig_roi_pct(rows)),
         ('ROI rate of change (%)', _fig_roi_rate_pct(rows, rolling_window)),
         ('Payback curve', _fig_payback_curve(rows)),
-        ('Energy flows', _fig_energy_flows(rows)),
+        ('Energy flows', _fig_energy_flows(rows, fuse_export)),
         ('Battery daily charge/discharge', _fig_battery_daily(rows, battery_enabled)),
     ]
+    fuse_hourly_lookup = functools.partial(load_hourly_export_kwh, settings['fuseDataDir'])
+    figures.extend(_top_spend_days_interval_figures(rows, energyday_by_date,
+                                                    fuse_hourly_lookup=fuse_hourly_lookup))
+    figures.extend(_top_roi_days_interval_figures(rows, energyday_by_date,
+                                                  fuse_hourly_lookup=fuse_hourly_lookup))
+    figures.extend(_bottom_roi_days_interval_figures(rows, energyday_by_date,
+                                                     fuse_hourly_lookup=fuse_hourly_lookup))
 
     output_path = _resolve_output_path(settings)
     _write_dashboard_html(figures, output_path, embed_plotly_js=not plotly_cdn)
