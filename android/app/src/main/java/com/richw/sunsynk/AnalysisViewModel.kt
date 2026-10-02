@@ -168,7 +168,8 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                                     val energyDay = EnergyDay(
                                         raw.getAsJsonObject("data"),
                                         dayDate, energyMonth,
-                                        null, opStart, opStop
+                                        null, opStart, opStop,
+                                        settings.exportCorrection.forDate(dayDate),
                                     )
                                     energyDay.runBattery(prices.battery)
                                     prices.addData(energyDay)

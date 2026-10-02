@@ -11,6 +11,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.richw.sunsynk.analysis.ExportCorrection
 import com.richw.sunsynk.analysis.VirtualBattery
 import com.richw.sunsynk.analysis.PriceData
 import java.io.BufferedOutputStream
@@ -38,6 +39,24 @@ data class BatteryConfig(
     val dischargeReserveUntil: String = "17:00",
 )
 
+/**
+ * Calibration of inverter export to the supplier's smart meter (mirrors the Python
+ * "exportCorrection" config): [gain] scales export readings, [chargerStandbyW] is the
+ * EV charger standby draw between the inverter CT and the meter, which is 0 on dates
+ * inside any inclusive [chargerOff] (from, to) range. Defaults reproduce the original
+ * fixed 2.3 Wh per 5-minute deduction.
+ */
+data class ExportCorrectionConfig(
+    val gain: Double = 1.0,
+    val chargerStandbyW: Double = 27.6,
+    val chargerOff: List<Pair<String, String>> = emptyList(),
+) {
+    fun forDate(date: String): ExportCorrection {
+        val off = chargerOff.any { (from, to) -> date >= from && date <= to }
+        return ExportCorrection(gain = gain, standbyW = if (off) 0.0 else chargerStandbyW)
+    }
+}
+
 data class AppSettings(
     val energyPrices: List<String> = listOf("_EnergyPrices.json"),
     val startDate: String = "",
@@ -47,6 +66,7 @@ data class AppSettings(
     val offPeakShift: String = "ON",
     val offPeakBaseline: Double = 0.96,
     val batteryConfigs: List<BatteryConfig> = listOf(BatteryConfig()),
+    val exportCorrection: ExportCorrectionConfig = ExportCorrectionConfig(),
 )
 
 fun AppSettings.isOffPeakShiftOn() = offPeakShift.equals("ON", ignoreCase = true)
@@ -101,7 +121,29 @@ fun loadSettingsFromJson(json: JsonObject): AppSettings {
         offPeakShift = json.get("offPeakShift")?.asString ?: "ON",
         offPeakBaseline = json.get("offPeakBaseline")?.asDouble ?: 0.96,
         batteryConfigs = batteryConfigs,
+        exportCorrection = parseExportCorrection(json.getAsJsonObject("exportCorrection")),
     )
+}
+
+fun parseExportCorrection(obj: JsonObject?): ExportCorrectionConfig {
+    val defaults = ExportCorrectionConfig()
+    if (obj == null) return defaults
+    return ExportCorrectionConfig(
+        gain = obj.get("gain")?.asDouble ?: defaults.gain,
+        chargerStandbyW = obj.get("chargerStandbyW")?.asDouble ?: defaults.chargerStandbyW,
+        chargerOff = obj.getAsJsonArray("chargerOff")?.map { r ->
+            val range = r.asJsonArray
+            Pair(range[0].asString, range[1].asString)
+        } ?: defaults.chargerOff,
+    )
+}
+
+fun exportCorrectionToJson(ec: ExportCorrectionConfig) = JsonObject().apply {
+    addProperty("gain", ec.gain)
+    addProperty("chargerStandbyW", ec.chargerStandbyW)
+    add("chargerOff", JsonArray().apply {
+        ec.chargerOff.forEach { (from, to) -> add(JsonArray().apply { add(from); add(to) }) }
+    })
 }
 
 private fun parseBatteryConfig(obj: JsonObject, defaults: BatteryConfig) = BatteryConfig(
@@ -139,6 +181,7 @@ fun settingsToJson(settings: AppSettings): JsonObject {
     obj.addProperty("originalPrice", settings.originalPrice)
     obj.addProperty("offPeakShift", settings.offPeakShift)
     obj.addProperty("offPeakBaseline", settings.offPeakBaseline)
+    obj.add("exportCorrection", exportCorrectionToJson(settings.exportCorrection))
     val vb = settings.batteryConfigs
     if (vb.size == 1) {
         obj.add("virtualBattery", batteryConfigToJson(vb[0]))
@@ -178,7 +221,10 @@ class ConfigStore(private val context: Context) {
     fun load(): AppSettings {
         if (!configFile.exists()) copyFromAssets()
         return try {
-            loadSettingsFromJson(JsonParser.parseString(configFile.readText()).asJsonObject)
+            val json = JsonParser.parseString(configFile.readText()).asJsonObject
+            // Configs saved before exportCorrection existed: adopt the bundled calibration.
+            if (!json.has("exportCorrection")) bundledExportCorrection()?.let { json.add("exportCorrection", it) }
+            loadSettingsFromJson(json)
         } catch (e: Exception) {
             AppSettings()
         }
@@ -193,6 +239,14 @@ class ConfigStore(private val context: Context) {
         context.assets.list("inverterData")
             ?.filter { it.startsWith("_EnergyPrices") && it.endsWith(".json") }
             ?.sorted() ?: emptyList()
+
+    private fun bundledExportCorrection(): JsonObject? = try {
+        context.assets.open("config.json").bufferedReader().use {
+            JsonParser.parseReader(it).asJsonObject.getAsJsonObject("exportCorrection")
+        }
+    } catch (e: Exception) {
+        null
+    }
 
     private fun copyFromAssets() {
         context.assets.open("config.json").use { input ->

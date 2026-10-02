@@ -3,6 +3,49 @@ package com.richw.sunsynk.analysis
 import com.google.gson.JsonObject
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+
+const val INTERVAL_MIN = 5L        // Sunsynk day records are nominally 5 minutes apart
+const val MAX_FILL_GAP_MIN = 30L   // gaps up to this are dropped samples; larger ones are left alone
+
+/**
+ * Records sorted by time with dropped 5-minute samples forward-filled (mirrors Python
+ * energyday._fill_gaps). The API omits a few samples a day (10-20 minute gaps); since
+ * each record counts as 5 minutes of energy (value/12), a missing one would otherwise
+ * count as zero and under-count every total by ~2.5%. Gaps longer than maxGapMin
+ * (e.g. coarse fixtures) are not filled.
+ */
+fun fillGaps(records: List<Pair<LocalTime, Double>>, maxGapMin: Long = MAX_FILL_GAP_MIN): List<Pair<LocalTime, Double>> {
+    val ordered = records.sortedBy { it.first }
+    val filled = ArrayList<Pair<LocalTime, Double>>(ordered.size + 16)
+    for (i in ordered.indices) {
+        val (t, v) = ordered[i]
+        filled.add(ordered[i])
+        if (i + 1 == ordered.size) break
+        val gap = ChronoUnit.MINUTES.between(t, ordered[i + 1].first)
+        if (gap in (INTERVAL_MIN + 1)..maxGapMin) {
+            for (k in 1 until gap / INTERVAL_MIN) filled.add(Pair(t.plusMinutes(k * INTERVAL_MIN), v))
+        }
+    }
+    return filled
+}
+
+/**
+ * How measured export (negative Grid samples) is adjusted before use (mirrors Python
+ * energyday.ExportCorrection). [gain] scales the inverter's export reading toward the
+ * supplier's meter (the shortfall is simply lost, never credited). [standbyW] is a load
+ * between the inverter CT and the meter (EV charger standby) that PV covers while
+ * exporting: removed from export and credited as self-consumed load (subtracted from
+ * import). Defaults (1.0, 27.6 W = 2.3 Wh per 5 min) reproduce the original fixed rule.
+ */
+data class ExportCorrection(val gain: Double = 1.0, val standbyW: Double = 27.6) {
+    /** (corrected export Wh, standby Wh credited as load) for one 5-minute sample. */
+    fun split(exportWh: Double): Pair<Double, Double> {
+        val exported = exportWh * gain
+        val standby = minOf(exported, standbyW / 12.0)
+        return Pair(exported - standby, standby)
+    }
+}
 
 class IntervalSummary(
     data: JsonObject,
@@ -10,6 +53,7 @@ class IntervalSummary(
     offPeakStart: String,
     offPeakStop: String,
     private val isLoad: Boolean = false,
+    private val correction: ExportCorrection = ExportCorrection(),
 ) {
     val label: String = data.get("label").asString
     var peak: Double = 0.0
@@ -27,11 +71,12 @@ class IntervalSummary(
         var recharged = false
         var batteryRanOut = false
 
-        val records = data.getAsJsonArray("records")
-        for (r in records) {
+        val raw = data.getAsJsonArray("records").map { r ->
             val rec = r.asJsonObject
-            val time = LocalTime.parse(rec.get("time").asString, fmt)
-            val value = rec.get("value").asString.toDouble() / 12.0
+            Pair(LocalTime.parse(rec.get("time").asString, fmt), rec.get("value").asString.toDouble())
+        }
+        for ((time, watts) in fillGaps(raw)) {
+            val value = watts / 12.0
             if (isLoad) parsed.add(Pair(time, value))
 
             if (!time.isBefore(start) && time.isBefore(stop)) {
@@ -54,9 +99,9 @@ class IntervalSummary(
         if (value > 0) {
             offPeak += value
         } else {
-            val extraLoad = minOf(-value, 2.3)
-            offPeakExport += -value - extraLoad
-            offPeak -= extraLoad
+            val (export, standby) = correction.split(-value)
+            offPeakExport += export
+            offPeak -= standby
         }
         return true
     }
@@ -68,10 +113,9 @@ class IntervalSummary(
                 battery.utilise(value, time) > 0
             } else false
         } else {
-            val extraLoad = minOf(-value, 2.3)
-            val export = -value - extraLoad
+            val (export, standby) = correction.split(-value)
             peakExport += export
-            peak -= extraLoad
+            peak -= standby
             if (battery != null && isLoad) {
                 battery.pvCharge(export, time)
             }
@@ -87,6 +131,7 @@ class EnergyDay(
     battery: VirtualBattery?,
     offPeakStart: String,
     offPeakStop: String,
+    private val exportCorrection: ExportCorrection = ExportCorrection(),
 ) {
     val pv: IntervalSummary
     val grid: IntervalSummary
@@ -112,7 +157,8 @@ class EnergyDay(
             val obj = item.asJsonObject
             when (obj.get("label").asString) {
                 "PV" -> pvTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop)
-                "Grid" -> gridTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop, isLoad = true)
+                "Grid" -> gridTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop, isLoad = true,
+                    correction = exportCorrection)
                 "Load" -> loadTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop)
             }
         }
@@ -139,8 +185,7 @@ class EnergyDay(
                 if (wh > 0) {
                     if (battery.utilise(wh, timeDt) > 0) batteryRanOut = true
                 } else {
-                    val extraLoad = minOf(-wh, 2.3)
-                    battery.pvCharge(-wh - extraLoad, timeDt)
+                    battery.pvCharge(exportCorrection.split(-wh).first, timeDt)
                 }
             }
         }

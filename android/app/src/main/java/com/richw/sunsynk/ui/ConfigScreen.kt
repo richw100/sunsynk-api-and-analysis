@@ -149,6 +149,72 @@ fun ConfigScreen(
                 }
             }
 
+            // ── EXPORT CORRECTION ─────────────────────────────────────
+            item { SectionHeader("Export Correction") }
+
+            item {
+                val ec = settings.exportCorrection
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    NumberField(
+                        label = "Export gain",
+                        value = ec.gain.toString(),
+                        modifier = Modifier.weight(1f),
+                        decimal = true,
+                        onValueChange = { v ->
+                            v.toDoubleOrNull()?.let { settings = settings.copy(exportCorrection = ec.copy(gain = it)) }
+                        },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    NumberField(
+                        label = "Charger standby W",
+                        value = ec.chargerStandbyW.toString(),
+                        modifier = Modifier.weight(1f),
+                        decimal = true,
+                        onValueChange = { v ->
+                            v.toDoubleOrNull()?.let {
+                                settings = settings.copy(exportCorrection = ec.copy(chargerStandbyW = it))
+                            }
+                        },
+                    )
+                }
+            }
+
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Charger off periods", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    IconButton(onClick = {
+                        val ec = settings.exportCorrection
+                        settings = settings.copy(exportCorrection = ec.copy(chargerOff = ec.chargerOff + Pair("", "")))
+                    }) {
+                        Icon(Icons.Default.Add, "Add charger-off period")
+                    }
+                }
+            }
+
+            itemsIndexed(settings.exportCorrection.chargerOff) { idx, (from, to) ->
+                fun update(range: Pair<String, String>) {
+                    val ec = settings.exportCorrection
+                    settings = settings.copy(exportCorrection = ec.copy(
+                        chargerOff = ec.chargerOff.toMutableList().also { it[idx] = range }))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    DateField(label = "Off from", value = from, modifier = Modifier.weight(1f),
+                        onChange = { update(Pair(it, to)) })
+                    Spacer(Modifier.width(8.dp))
+                    DateField(label = "Off to", value = to, modifier = Modifier.weight(1f),
+                        onChange = { update(Pair(from, it)) })
+                    IconButton(onClick = {
+                        val ec = settings.exportCorrection
+                        settings = settings.copy(exportCorrection = ec.copy(
+                            chargerOff = ec.chargerOff.toMutableList().also { it.removeAt(idx) }))
+                    }) {
+                        Icon(Icons.Default.Delete, "Remove charger-off period",
+                            tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
             // ── TARIFF FILES ──────────────────────────────────────────
             item { SectionHeader("Tariff Files") }
 
