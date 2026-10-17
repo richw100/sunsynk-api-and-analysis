@@ -14,6 +14,11 @@
         "chargerStandbyW": 11,
         "chargerOff": [["2026-08-06", "2026-08-25"]]
     },
+    "pvCheck": {
+        "_comment": "Weather-normalised PV health check (analysis/pvcheck.py). Orientation fitted from Jun-Oct 2025 data; site latitude/longitude live in git-ignored config.local.json.",
+        "tiltDeg": 40,
+        "azimuthDeg": -38
+    },
     "virtualBattery": [
         {
             "label": "Grid charge, PV only",
