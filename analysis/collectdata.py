@@ -13,6 +13,7 @@ from analysis.energyday import EnergyDay, ExportCorrection
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices, _battery_warnings
+from analysis.projection import latest_rates
 
 from datetime import datetime
 from tqdm import tqdm
@@ -454,32 +455,32 @@ def _pv_boost_metrics(all_boost_results, battery_idx=0, price_idx=0):
 
     all_boost_results: list of (boost_dict, all_battery_results), where all_battery_results
     is a list of (bc_label, [EnergyPrices, ...]).  Returns one metrics dict per boost option,
-    all money figures annualised (x365/days) and quoted as a delta against the baseline.
+    every figure a delta against the baseline over a seasonally weighted year, with money
+    priced at the latest tariff rates (EnergyPrices.projection, see projection.py).
     """
     def _prices(entry):
         return entry[1][battery_idx][1][price_idx]
 
     p0 = _prices(all_boost_results[0])
-    t0 = p0.get_grand_totals()
-    d0 = p0.get_derived()
-    days = t0['days']
-    ann = 365.0 / days if days > 0 else 0.0
+    proj0 = p0.projection
+    money0 = proj0.annual_money(latest_rates(p0.prices))
     battery_enabled = bool(p0.battery_enabled)
 
     rows = []
     for entry in all_boost_results:
         boost = entry[0]
         pi = _prices(entry)
-        ti = pi.get_grand_totals()
-        di = pi.get_derived()
-        export_rate = pi.price_data.current_export
+        proj = pi.projection
+        rates = latest_rates(pi.prices)
+        money = proj.annual_money(rates)
+        export_rate = rates['export']
 
-        deliv = round(ann * (ti['total_calc_pv'] - t0['total_calc_pv']), 2)
-        clip = round(ann * ti['total_pv_clip_loss'], 2)
+        deliv = round(proj.annual_kwh('pv') - proj0.annual_kwh('pv'), 2)
+        clip = round(proj.annual_kwh('pv_clip_loss'), 2)
         clip_pct = round(100 * clip / (deliv + clip), 1) if (deliv + clip) > 0 else 0.0
-        self_cons = round(ann * (t0['total_cost'] - ti['total_cost']), 2)
-        export_inc = round(ann * (ti['total_export_amount_calc'] - t0['total_export_amount_calc']), 2)
-        batt = round(ann * (di['battery_savings'] - d0['battery_savings']), 2) if battery_enabled else 0.0
+        self_cons = round(money['self_consumption'] - money0['self_consumption'], 2)
+        export_inc = round(money['export'] - money0['export'], 2)
+        batt = round(money['battery'] - money0['battery'], 2) if battery_enabled else 0.0
         total_extra = round(self_cons + export_inc + batt, 2)
         cost = float(boost['cost'])
         payback = round(cost / total_extra, 1) if total_extra > 0 else None
@@ -537,8 +538,9 @@ def _print_pv_boost_comparison(all_boost_results, existing_pv_watts, battery_idx
     def kwh(v):
         return f"{v:.1f}kWh"
 
-    print(f"\nPV BOOST COMPARISON  (Δ vs baseline, annualised ×365/{days}d; "
+    print(f"\nPV BOOST COMPARISON  (Δ vs baseline per year; "
           f"existing array {existing_pv_watts:.0f}W; battery cfg [{battery_idx}], tariff [{price_idx}])")
+    print(f"  {p0.projection_note()}")
     print(header)
 
     row("Added PV capacity:", 'add_watts', lambda v: f"{v:.0f}W")
@@ -564,7 +566,7 @@ def _print_pv_boost_comparison(all_boost_results, existing_pv_watts, battery_idx
     print("  Assumes added panels share the existing array's generation profile (aspect,")
     print("  tilt, shading). Microinverter clipping is modelled from 5-min average power")
     print("  and slightly under-states real instantaneous clipping. DNO/G98 export limits")
-    print("  and DC-side losses are not modelled; payback uses historical tariff rates.")
+    print("  and DC-side losses are not modelled; payback uses the latest tariff rates.")
 
 
 async def _iter_energy_days(client, inverter, prices: EnergyPrices,

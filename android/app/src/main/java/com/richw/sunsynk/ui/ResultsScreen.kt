@@ -197,9 +197,16 @@ private fun RoiCard(s: SavingsData, c: CostData) {
         MetricRow("Alt. investment value", "£${"%.2f".format(s.altInvestValue)}")
         MetricRow("Net ROI", "${"%.2f".format(s.netRoiPct)}%",
             valueColor = if (s.netRoiPct >= 0) green else MaterialTheme.colorScheme.error)
+        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+        MetricRow("Projected annual saving", "£${"%.2f".format(s.annualisedSolar)}", valueColor = green)
         if (s.solarPaybackYears != null) {
             MetricRow("Payback period", "${"%.1f".format(s.solarPaybackYears)} years")
         }
+        if (s.solarPaybackRemainingYears != null) {
+            MetricRow("Payback remaining", "${"%.1f".format(s.solarPaybackRemainingYears)} years")
+        }
+        Text(s.projectionNote, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

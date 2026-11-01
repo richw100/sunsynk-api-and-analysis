@@ -28,7 +28,10 @@ data class SavingsData(
     val offPeakImportKwh: Double,
     val offPeakExcessKwh: Double,
     val offPeakSavings: Double,
+    val annualisedSolar: Double,
     val solarPaybackYears: Double?,
+    val solarPaybackRemainingYears: Double?,
+    val projectionNote: String,
 )
 
 data class BatteryData(

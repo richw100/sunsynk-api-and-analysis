@@ -14,6 +14,7 @@ from analysis.collectdata import (
 )
 from analysis.energyprices import EnergyPrices
 from analysis.pricedata import PriceData
+from analysis.projection import SeasonalProjection
 from tests.mock_api_server import MockApiServer
 
 MISSING_CONFIG = 'config:/nonexistent/does-not-exist.json'
@@ -102,44 +103,39 @@ def test_load_settings_cli_builds_comparison():
 
 # ─── _pv_boost_metrics ──────────────────────────────────────────────────────
 
-class _FakePriceData:
-    current_export = 0.15
+_FAKE_RATES = {'data': {'prices': [
+    {'datefrom': '2020-01-01', 'peakRate': '0.30', 'offpeakRate': '0.10', 'exportRate': '0.15'},
+]}}
 
 
 class _FakePrices:
-    def __init__(self, totals, derived, battery_enabled=False):
-        self._t = totals
-        self._d = derived
+    """Stands in for EnergyPrices: a projection holding one day per calendar month of
+    the given per-day kWh, so annual_kwh() is exactly per-day × 365."""
+    def __init__(self, kwh, battery_enabled=False):
         self.battery_enabled = battery_enabled
-        self.price_data = _FakePriceData()
-
-    def get_grand_totals(self):
-        return self._t
-
-    def get_derived(self):
-        return self._d
+        self.prices = _FAKE_RATES
+        self.projection = SeasonalProjection()
+        for month in range(1, 13):
+            self.projection.add_day(f'2026-{month:02d}-01', kwh)
 
 
-def _entry(boost, totals, derived, battery_enabled=False):
-    return (boost, [('cfg', [_FakePrices(totals, derived, battery_enabled)])])
+def _entry(boost, kwh, battery_enabled=False):
+    return (boost, [('cfg', [_FakePrices(kwh, battery_enabled)])])
+
+
+def _kwh(pv=0.0, clip=0.0, import_peak=0.0, export=0.0):
+    return {'load_peak': 10.0, 'import_peak': import_peak, 'export': export,
+            'pv': pv, 'pv_clip_loss': clip}
 
 
 def test_pv_boost_metrics_math():
-    days = 365  # ann factor == 1.0
-    base_t = {'days': days, 'total_calc_pv': 1000.0, 'total_pv_clip_loss': 0.0,
-              'total_cost': 500.0, 'total_export_amount_calc': 100.0}
-    base_d = {'battery_savings': 0}
-    boost_t = {'days': days, 'total_calc_pv': 1300.0, 'total_pv_clip_loss': 40.0,
-               'total_cost': 460.0, 'total_export_amount_calc': 130.0}
-    boost_d = {'battery_savings': 0}
-
     boosts = [
         {'label': 'Baseline', 'addWatts': 0.0, 'cost': 0.0, 'inverterClipW': None},
         {'label': '+1260W', 'addWatts': 1260.0, 'cost': 989.0, 'inverterClipW': 800.0},
     ]
     results = [
-        _entry(boosts[0], base_t, base_d),
-        _entry(boosts[1], boost_t, boost_d),
+        _entry(boosts[0], _kwh(pv=10.0, import_peak=5.0, export=2.0)),
+        _entry(boosts[1], _kwh(pv=12.0, clip=0.4, import_peak=4.0, export=2.5)),
     ]
     m = _pv_boost_metrics(results)
 
@@ -147,29 +143,25 @@ def test_pv_boost_metrics_math():
     assert m[0]['deliv'] == 0.0 and m[0]['total_extra'] == 0.0 and m[0]['payback'] is None
 
     row = m[1]
-    assert row['deliv'] == pytest.approx(300.0)        # 1300 - 1000
-    assert row['clip'] == pytest.approx(40.0)
-    assert row['clip_pct'] == pytest.approx(100 * 40 / 340, abs=0.1)
-    assert row['clip_value'] == pytest.approx(40 * 0.15)
-    assert row['self_cons'] == pytest.approx(40.0)     # 500 - 460
-    assert row['export_inc'] == pytest.approx(30.0)    # 130 - 100
-    assert row['total_extra'] == pytest.approx(70.0)
-    assert row['payback'] == pytest.approx(round(989.0 / 70.0, 1))
-    assert row['roi'] == pytest.approx(round(100 * 70.0 / 989.0, 1))
+    assert row['deliv'] == pytest.approx(365 * 2.0)
+    assert row['clip'] == pytest.approx(365 * 0.4)
+    assert row['clip_pct'] == pytest.approx(100 * 0.4 / 2.4, abs=0.1)
+    assert row['clip_value'] == pytest.approx(365 * 0.4 * 0.15, abs=0.01)
+    assert row['self_cons'] == pytest.approx(365 * 1.0 * 0.30, abs=0.01)   # 1 kWh/day less peak import
+    assert row['export_inc'] == pytest.approx(365 * 0.5 * 0.15, abs=0.01)
+    total = 365 * (0.30 + 0.075)
+    assert row['total_extra'] == pytest.approx(total, abs=0.01)
+    assert row['payback'] == pytest.approx(round(989.0 / total, 1))
+    assert row['roi'] == pytest.approx(round(100 * total / 989.0, 1))
 
 
 def test_pv_boost_metrics_negative_saving_gives_na_payback():
-    days = 365
-    base_t = {'days': days, 'total_calc_pv': 1000.0, 'total_pv_clip_loss': 0.0,
-              'total_cost': 500.0, 'total_export_amount_calc': 100.0}
-    worse_t = {'days': days, 'total_calc_pv': 1000.0, 'total_pv_clip_loss': 0.0,
-               'total_cost': 520.0, 'total_export_amount_calc': 100.0}
-    d = {'battery_savings': 0}
     boosts = [
         {'label': 'Baseline', 'addWatts': 0.0, 'cost': 0.0, 'inverterClipW': None},
         {'label': 'Bad', 'addWatts': 500.0, 'cost': 400.0, 'inverterClipW': None},
     ]
-    m = _pv_boost_metrics([_entry(boosts[0], base_t, d), _entry(boosts[1], worse_t, d)])
+    m = _pv_boost_metrics([_entry(boosts[0], _kwh(pv=10.0, import_peak=5.0)),
+                           _entry(boosts[1], _kwh(pv=10.0, import_peak=5.5))])
     assert m[1]['total_extra'] < 0
     assert m[1]['payback'] is None
     assert m[1]['clip_pct'] == 0.0

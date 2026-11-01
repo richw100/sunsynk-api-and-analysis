@@ -209,8 +209,8 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
         val netRoiPct = if (alt > 0) (100 * cumulative / alt).round2() else 0.0
         val batterySavings = d["battery_savings"] as Double
         val perDay = if (days > 0) (batterySavings / days).round2() else 0.0
-        val annualisedSolar = if (days > 0) (t["total_savings_calc"]!! / days * 365).round2() else 0.0
-        val solarPaybackYears = if (annualisedSolar > 0) (originalPrice / annualisedSolar).round2() else null
+        val annualisedSolar = d["annualised_solar"] as Double
+        val solarPaybackYears = d["solar_payback_years"] as? Double
 
         val warnings = buildList {
             val seen = mutableSetOf<String>()
@@ -255,7 +255,10 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                 offPeakImportKwh = t["total_calc_import_off_peak"]!!,
                 offPeakExcessKwh = t["total_off_peak_excess"]!!,
                 offPeakSavings = t["total_off_peak_excess_savings"]!!,
+                annualisedSolar = annualisedSolar,
                 solarPaybackYears = solarPaybackYears,
+                solarPaybackRemainingYears = d["solar_payback_remaining_years"] as? Double,
+                projectionNote = projectionNote(),
             ),
             battery = BatteryData(
                 enabled = batteryEnabled,

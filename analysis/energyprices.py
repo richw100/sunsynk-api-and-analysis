@@ -3,7 +3,8 @@ from datetime import datetime
 
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
-from analysis.energysummary import EnergySummary, EnergySummaryAggregator
+from analysis.energysummary import EnergySummary, EnergySummaryAggregator, QueryType
+from analysis.projection import SeasonalProjection, latest_rates
 
 
 def _battery_warnings(battery: VirtualBattery, pd: PriceData) -> list:
@@ -65,6 +66,10 @@ class EnergyPrices:
         self.aggregator.add_summary(EnergySummary(self.price_data, self.battery, 0, self.original_price))
         self.grand_totals = self.aggregator.get_grand_totals()
         self.changed = True
+        # Annual/payback figures: per-calendar-month kWh, repriced at the latest tariff.
+        self.projection = SeasonalProjection()
+        self._current_date = None
+        self._battery_seen = (0.0, 0.0, 0.0, 0.0)
 
     def _make_battery(self, price_data: PriceData) -> VirtualBattery:
         return VirtualBattery(
@@ -86,6 +91,7 @@ class EnergyPrices:
         )
 
     def check_date(self, date_in: str):
+        self._current_date = date_in
         if re.match("[0-9]{4}-[0-9]{2}-01$", date_in):
             last_summary = self.aggregator.get_last_summary()
             last_summary.new_month()
@@ -109,6 +115,7 @@ class EnergyPrices:
                     self.price_data.current_start = new_start
                     self.price_data.current_stop = new_stop
                     self.battery = self._make_battery(self.price_data)
+                    self._battery_seen = (0.0, 0.0, 0.0, 0.0)
 
                     last_summary = self.aggregator.get_last_summary()
                     remainder = last_summary.get_remainder()
@@ -121,6 +128,30 @@ class EnergyPrices:
     def add_data(self, energyday):
         self.changed = True
         self.aggregator.update_last_summary(energyday)
+        if self._current_date:
+            self.projection.add_day(self._current_date, self._projection_kwh(energyday))
+
+    def _projection_kwh(self, energyday) -> dict:
+        """This day's kWh for the projection. Battery figures are the change in the
+        simulation battery's cumulative counters since the previous add_data()."""
+        b = self.battery
+        seen = (b.charge_amount / b.charge_efficiency, b.drawn, b.exported, b.pv_diverted)
+        grid_charge, drawn, exported, pv_diverted = (
+            (now - before) / 1000 for now, before in zip(seen, self._battery_seen))
+        self._battery_seen = seen
+        return {
+            'load_peak': energyday.get_calc_load_peak() / 1000,
+            'load_off_peak': energyday.get_calc_load_off_peak() / 1000,
+            'import_peak': energyday.get_calc_import(QueryType.PEAK) / 1000,
+            'import_off_peak': energyday.get_calc_import(QueryType.OFFPEAK) / 1000,
+            'export': energyday.get_calc_export(QueryType.BOTH) / 1000,
+            'pv': energyday.get_calc_pv() / 1000,
+            'pv_clip_loss': energyday.get_pv_clip_loss() / 1000,
+            'batt_drawn': drawn,
+            'batt_exported': exported,
+            'batt_grid_charge': grid_charge,
+            'batt_pv_diverted': pv_diverted,
+        }
 
     def get_grand_totals(self):
         if self.changed:
@@ -149,12 +180,21 @@ class EnergyPrices:
             - t['battery_cost_from_grid'] - t['battery_lost_export_cost'], 2
         ) if self.battery_enabled else 0
 
-        days = t['days']
-        annualised_battery = round(365 * battery_savings / days, 2) if days > 0 else 0
+        # Forward-looking figures: seasonally weighted year at the latest tariff rates.
+        rates = latest_rates(self.prices)
+        annual = self.projection.annual_money(rates)
+        annualised_solar = round(annual['solar'], 2)
+        annualised_battery = round(annual['battery'], 2) if self.battery_enabled else 0
         if self.battery_price > 0 and annualised_battery > 0:
             payback_years = round(self.battery_price / annualised_battery, 1)
         else:
             payback_years = None
+        if annualised_solar > 0:
+            solar_payback_years = round(self.original_price / annualised_solar, 1)
+            solar_payback_remaining_years = round(
+                max(0.0, self.original_price - t['total_savings_calc']) / annualised_solar, 1)
+        else:
+            solar_payback_years = solar_payback_remaining_years = None
 
         return {
             "t": t,
@@ -170,7 +210,24 @@ class EnergyPrices:
             "battery_savings": battery_savings,
             "annualised_battery": annualised_battery,
             "payback_years": payback_years,
+            "annualised_solar": annualised_solar,
+            "annualised_solar_self_consumption": round(annual['self_consumption'], 2),
+            "annualised_solar_export": round(annual['export'], 2),
+            "solar_payback_years": solar_payback_years,
+            "solar_payback_remaining_years": solar_payback_remaining_years,
+            "projection_rates": rates,
+            "projection_seasonal": self.projection.seasonal,
+            "projection_months": self.projection.months_covered,
         }
+
+    def projection_note(self) -> str:
+        """One-line description of how the annual figures were derived."""
+        d = self.get_derived()
+        r = d['projection_rates']
+        basis = ("seasonally weighted year" if d['projection_seasonal'] else
+                 f"PROVISIONAL simple average, only {d['projection_months']}/12 months seen")
+        return (f"{basis}, at latest rates from {r['datefrom']}: peak {r['peak'] * 100:.2f}p,"
+                f" off-peak {r['off_peak'] * 100:.2f}p, export {r['export'] * 100:.2f}p")
 
     def print_costs(self):
         d = self.get_derived()
@@ -209,6 +266,14 @@ class EnergyPrices:
         print(f"  Cumulative savings (with compound interest):    £{cumulative}")
         print(f"  Alternative investment value (same interest):   £{alt}")
         print(f"  Net ROI:                                        {percentage}%")
+        print("")
+        print(f"  Projection ({self.projection_note()}):")
+        print(f"    Annual solar saving:   £{d['annualised_solar']:.2f}"
+              f"  (self-consumption £{d['annualised_solar_self_consumption']:.2f}"
+              f" + export £{d['annualised_solar_export']:.2f})")
+        if d['solar_payback_years'] is not None:
+            print(f"    Payback from install:  {d['solar_payback_years']} years"
+                  f"   (remaining from today: {d['solar_payback_remaining_years']} years)")
 
     def print_energy_summary(self):
         t = self.get_grand_totals()
@@ -267,7 +332,8 @@ class EnergyPrices:
             print(f"  Net potential saving:                       £{d['battery_savings']}")
             print(f"    = peak saving £{t['battery_nominal_cost']} + export £{t['battery_export_cost']}"
                   f" − charging cost £{t['battery_cost_from_grid']} − foregone export £{t['battery_lost_export_cost']}")
-            print(f"  Per day: £{round(d['battery_savings']/days, 2)}   Annualised: £{d['annualised_battery']}")
+            print(f"  Per day: £{round(d['battery_savings']/days, 2)}   Annualised: £{d['annualised_battery']}"
+                  f"  ({self.projection_note()})")
             if self.battery_price > 0:
                 if d['payback_years'] is not None:
                     print(f"  Battery cost: £{self.battery_price:.2f}   Payback period: {d['payback_years']} years")

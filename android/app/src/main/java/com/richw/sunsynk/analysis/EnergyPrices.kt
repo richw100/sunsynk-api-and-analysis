@@ -58,6 +58,10 @@ class EnergyPrices(
     var battery: VirtualBattery
     private var grandTotals: Map<String, Double> = emptyMap()
     private var changed = true
+    // Annual/payback figures: per-calendar-month kWh, repriced at the latest tariff.
+    val projection = SeasonalProjection()
+    private var currentDate: String? = null
+    private var batterySeen = DoubleArray(4)
 
     init {
         priceData.offPeakBaselineKwh = offPeakBaselineKwh
@@ -85,6 +89,7 @@ class EnergyPrices(
     )
 
     fun checkDate(dateIn: String) {
+        currentDate = dateIn
         val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         if (dateIn.endsWith("-01")) {
             aggregator.getLastSummary().newMonth()
@@ -109,6 +114,7 @@ class EnergyPrices(
                     priceData.currentStart = newStart
                     priceData.currentStop = newStop
                     battery = makeBattery(priceData)
+                    batterySeen = DoubleArray(4)
 
                     val last = aggregator.getLastSummary()
                     val remainder = last.getRemainder()
@@ -124,6 +130,37 @@ class EnergyPrices(
     fun addData(day: EnergyDay) {
         changed = true
         aggregator.updateLastSummary(day)
+        currentDate?.let { projection.addDay(it, projectionKwh(day)) }
+    }
+
+    /** This day's kWh for the projection; battery figures are the change in the
+     *  simulation battery's cumulative counters since the previous addData(). */
+    private fun projectionKwh(day: EnergyDay): Map<String, Double> {
+        val b = battery
+        val seen = doubleArrayOf(b.chargeAmount / b.chargeEfficiency, b.drawn, b.exported, b.pvDiverted)
+        val delta = DoubleArray(4) { (seen[it] - batterySeen[it]) / 1000 }
+        batterySeen = seen
+        return mapOf(
+            "load_peak" to day.getCalcLoadPeak() / 1000,
+            "load_off_peak" to day.getCalcLoadOffPeak() / 1000,
+            "import_peak" to day.getCalcImportPeak() / 1000,
+            "import_off_peak" to day.getCalcImportOffPeak() / 1000,
+            "export" to day.getCalcExport() / 1000,
+            "pv" to day.getCalcPv() / 1000,
+            "batt_grid_charge" to delta[0],
+            "batt_drawn" to delta[1],
+            "batt_exported" to delta[2],
+            "batt_pv_diverted" to delta[3],
+        )
+    }
+
+    /** One-line description of how the annual figures were derived. */
+    fun projectionNote(): String {
+        val r = latestRates(pricesJson)
+        val basis = if (projection.seasonal) "seasonally weighted year"
+            else "PROVISIONAL simple average, only ${projection.monthsCovered}/12 months seen"
+        return "$basis, at latest rates from ${r.dateFrom}: peak ${"%.2f".format(r.peak * 100)}p, " +
+            "off-peak ${"%.2f".format(r.offPeak * 100)}p, export ${"%.2f".format(r.export * 100)}p"
     }
 
     fun getGrandTotals(): Map<String, Double> {
@@ -152,10 +189,18 @@ class EnergyPrices(
                 t["battery_cost_from_grid"]!! - t["battery_lost_export_cost"]!!).round2()
         } else 0.0
 
-        val days = t["days"]!!
-        val annualisedBattery = if (days > 0) (365 * batterySavings / days).round2() else 0.0
+        // Forward-looking figures: seasonally weighted year at the latest tariff rates.
+        val rates = latestRates(pricesJson)
+        val annual = projection.annualMoney(rates)
+        val annualisedSolar = annual.solar.round2()
+        val annualisedBattery = if (batteryEnabled) annual.battery.round2() else 0.0
         val paybackYears: Double? = if (batteryPrice > 0 && annualisedBattery > 0) {
             (batteryPrice / annualisedBattery).round2()
+        } else null
+        val solarPaybackYears: Double? =
+            if (annualisedSolar > 0) (originalPrice / annualisedSolar).round2() else null
+        val solarPaybackRemainingYears: Double? = if (annualisedSolar > 0) {
+            (maxOf(0.0, originalPrice - t["total_savings_calc"]!!) / annualisedSolar).round2()
         } else null
 
         return mapOf(
@@ -172,6 +217,13 @@ class EnergyPrices(
             "battery_savings" to batterySavings,
             "annualised_battery" to annualisedBattery,
             "payback_years" to paybackYears,
+            "annualised_solar" to annualisedSolar,
+            "annualised_solar_self_consumption" to annual.selfConsumption.round2(),
+            "annualised_solar_export" to annual.export.round2(),
+            "solar_payback_years" to solarPaybackYears,
+            "solar_payback_remaining_years" to solarPaybackRemainingYears,
+            "projection_seasonal" to projection.seasonal,
+            "projection_months" to projection.monthsCovered,
         )
     }
 
@@ -231,6 +283,15 @@ class EnergyPrices(
         sb.appendLine("  Cumulative savings (with compound interest):    £$cumulative")
         sb.appendLine("  Alternative investment value (same interest):   £$alt")
         sb.appendLine("  Net ROI:                                        $percentage%")
+        sb.appendLine()
+        sb.appendLine("  Projection (${projectionNote()}):")
+        sb.appendLine("    Annual solar saving:   £${"%.2f".format(d["annualised_solar"])}" +
+            "  (self-consumption £${"%.2f".format(d["annualised_solar_self_consumption"])}" +
+            " + export £${"%.2f".format(d["annualised_solar_export"])})")
+        (d["solar_payback_years"] as? Double)?.let { py ->
+            sb.appendLine("    Payback from install:  ${"%.1f".format(py)} years" +
+                "   (remaining from today: ${"%.1f".format(d["solar_payback_remaining_years"])} years)")
+        }
 
         if (offPeakShiftEnabled) {
             sb.appendLine()
@@ -258,7 +319,7 @@ class EnergyPrices(
             sb.appendLine("    = peak saving £${t["battery_nominal_cost"]} + export £${t["battery_export_cost"]}" +
                 " − charging cost £${t["battery_cost_from_grid"]} − foregone export £${t["battery_lost_export_cost"]}")
             val perDay = if (days > 0) ((d["battery_savings"] as Double) / days).round2() else 0.0
-            sb.appendLine("  Per day: £$perDay   Annualised: £${d["annualised_battery"]}")
+            sb.appendLine("  Per day: £$perDay   Annualised: £${d["annualised_battery"]}  (${projectionNote()})")
             if (batteryPrice > 0) {
                 val py = d["payback_years"] as? Double
                 if (py != null) {
