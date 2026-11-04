@@ -168,6 +168,7 @@ class EnergyDay(Resource):
         # rest is import. Slots with no Sunsynk sample get one carrying only the EV draw.
         # The battery simulation keeps the CT-side Grid (a battery there couldn't feed the car).
         ev_watts = {t: w for t, w in (ev_watts or {}).items() if w > 0}
+        self._ev_watts = ev_watts
         self.ev_from_pv = 0.0   # Wh of EV charging met by PV the CT counted as export
 
         def _add_ev(item):
@@ -224,6 +225,40 @@ class EnergyDay(Resource):
                     battery.pv_charge(self.export_correction.split(-wh)[0], time_dt)
         if battery_ran_out:
             battery.set_ran_out()
+
+    def import_slots(self) -> tuple:
+        """Import Wh per local half-hour (48 slots): ``(total, ev)``.
+
+        ``total`` sums the same per-sample rule as the Grid IntervalSummary (an import sample
+        counts in full; an export sample credits the charger standby against import), so
+        ``sum(total) == get_calc_import()``. ``ev`` is the EV charger's share of that import:
+        its draw less the CT-measured export it soaked up, so ``sum(ev)`` equals the EV kWh
+        minus ``get_calc_ev_from_pv()``. Used to price the day at any tariff's time windows.
+        """
+        total, ev = [0.0] * 48, [0.0] * 48
+        for record in self.grid.records:
+            hh, mm = record['time'].split(':')
+            slot = int(hh) * 2 + (int(mm) >= 30)
+            value = float(record['value'])
+            if value > 0:
+                total[slot] += value / 12
+            else:
+                total[slot] -= self.export_correction.split(-value / 12)[1]
+            w = self._ev_watts.get(record['time'], 0.0)
+            if w:
+                ct = value - w
+                ev[slot] += (w - min(w, max(0.0, -ct))) / 12
+        return total, ev
+
+    def export_slots(self) -> list:
+        """Corrected export Wh per local half-hour (48 slots); sums to get_calc_export()."""
+        out = [0.0] * 48
+        for record in self.grid.records:
+            value = float(record['value'])
+            if value < 0:
+                hh, mm = record['time'].split(':')
+                out[int(hh) * 2 + (int(mm) >= 30)] += self.export_correction.split(-value / 12)[0]
+        return out
 
     def get_calc_export(self, qtype: QueryType = QueryType.BOTH):
         if qtype == QueryType.BOTH:

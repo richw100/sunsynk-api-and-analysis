@@ -122,3 +122,70 @@ def rebased_annual_ev(before: SeasonalProjection, after: SeasonalProjection):
     ev = {k: year * split[k] / after_total if after_total else 0.0 for k in EV_KEYS}
     return ev, ratio, len(a)
 
+
+
+class SlotProjection:
+    """A seasonally weighted year of grid import and export per local half-hour (48 slots).
+
+    Per calendar month it sums house import (total less the EV's share), EV import and
+    export per slot. ``annual_house()`` / ``annual_export()`` weight each month like
+    SeasonalProjection.annual_kwh(); ``ev_shape()`` is the EV import's half-hour shape, from
+    days on or after ``ev_basis_from`` when given (current charging habits), which callers
+    scale to a projected EV year. ``monthly()`` gives an average month of each series.
+    """
+
+    def __init__(self, ev_basis_from: str = ''):
+        self.ev_basis_from = ev_basis_from or ''
+        self._house = [[0.0] * 48 for _ in range(12)]
+        self._export = [[0.0] * 48 for _ in range(12)]
+        self._days = [0] * 12
+        self._ev_all = [0.0] * 48
+        self._ev_after = [0.0] * 48
+
+    def add_day(self, date_str: str, total_wh: list, ev_wh: list, export_wh: list | None = None):
+        m = int(date_str[5:7]) - 1
+        self._days[m] += 1
+        after = bool(self.ev_basis_from) and date_str >= self.ev_basis_from
+        for k in range(48):
+            self._house[m][k] += (total_wh[k] - ev_wh[k]) / 1000
+            self._ev_all[k] += ev_wh[k] / 1000
+            if after:
+                self._ev_after[k] += ev_wh[k] / 1000
+            if export_wh is not None:
+                self._export[m][k] += export_wh[k] / 1000
+
+    @property
+    def days(self) -> int:
+        return sum(self._days)
+
+    @property
+    def seasonal(self) -> bool:
+        return all(self._days)
+
+    def _annual(self, series: list) -> list:
+        if self.seasonal:
+            return [sum(series[m][k] / self._days[m] * DAYS_IN_MONTH[m] for m in range(12))
+                    for k in range(48)]
+        if self.days == 0:
+            return [0.0] * 48
+        return [365 * sum(month[k] for month in series) / self.days for k in range(48)]
+
+    def annual_house(self) -> list:
+        """House import kWh per half-hour slot over a year (same weighting as SeasonalProjection)."""
+        return self._annual(self._house)
+
+    def annual_export(self) -> list:
+        """Export kWh per half-hour slot over a year."""
+        return self._annual(self._export)
+
+    def monthly(self) -> dict:
+        """{month index: (house import kWh, export kWh)} for an average such month (seen months only)."""
+        return {m: (sum(self._house[m]) / self._days[m] * DAYS_IN_MONTH[m],
+                    sum(self._export[m]) / self._days[m] * DAYS_IN_MONTH[m])
+                for m in range(12) if self._days[m]}
+
+    def ev_shape(self) -> list:
+        """Fraction of EV import in each slot (sums to 1, or all 0 without EV data)."""
+        src = self._ev_after if sum(self._ev_after) > 0 else self._ev_all
+        total = sum(src)
+        return [v / total if total else 0.0 for v in src]
