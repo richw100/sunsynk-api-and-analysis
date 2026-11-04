@@ -115,6 +115,8 @@ def _parse_cli_args(argv):
             overrides['evCharging'] = value
         elif key_lower == 'evdatadir':
             overrides['evDataDir'] = value
+        elif key_lower == 'evbasisfrom':
+            overrides['evBasisFrom'] = value
         elif key_lower == 'exportgain':
             overrides.setdefault('exportCorrection', {})['gain'] = float(value)
         elif key_lower == 'chargerstandbyw':
@@ -156,6 +158,7 @@ def _load_settings(argv):
         'fuseDataDir': 'fuseenergydata',  # graphs.py only: Fuse meter-export cache to overlay
         'evCharging': 'ON',      # add the Indra EV charger (outside the CT) to load/import
         'evDataDir': 'indraData',
+        'evBasisFrom': '',       # project EV charging at the level since this date ('' = seasonal)
         'virtualBattery': {
             'enabled': 'ON',
             'batterySize': 5000,
@@ -283,6 +286,8 @@ def _print_usage():
     print("  evCharging:ON|OFF       Add EV charging to load/import/export figures (default: ON;")
     print("                          no effect if evDataDir has no data)")
     print("  evDataDir:DIR           Indra cache directory (default: indraData)")
+    print("  evBasisFrom:YYYY-MM-DD  Project EV charging at the level since this date, e.g. a")
+    print("                          second car (default: seasonal average of all data)")
     print("")
     print("Plug-in solar (PV boost) options:")
     print("  existingPvWatts:N       Current array size in W for scaling (default: 3115 = 7x445W)")
@@ -860,6 +865,7 @@ async def main():
                             off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
                             battery_enabled=battery_enabled,
                             battery_price=float(battery_config['batteryPrice']),
+                            ev_basis_from=str(settings['evBasisFrom']),
                         )
 
                         async for date_str, energyday, _battery_delta in _iter_energy_days(

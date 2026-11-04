@@ -2,9 +2,10 @@ import pytest
 
 from analysis.energyprices import EnergyPrices
 from analysis.pricedata import PriceData
-from analysis.projection import DAYS_IN_MONTH, SeasonalProjection, latest_rates
+from analysis.projection import DAYS_IN_MONTH, SeasonalProjection, latest_rates, rebased_annual_ev
 from analysis.virtualbattery import VirtualBattery
-from tests.test_calculations import make_day
+from analysis.energysummary import QueryType
+from tests.test_calculations import MockEnergyDay, make_day
 
 PRICES = {'data': {'prices': [
     {'datefrom': '2025-01-01', 'dateto': '2025-12-31', 'offpeakRate': '0.07', 'offpeakStart': '00:00',
@@ -100,3 +101,68 @@ def test_energy_prices_projection_tracks_battery_deltas_across_tariff_switch():
     ep.battery.drawn += 1000
     ep.add_data(make_day())
     assert ep.projection.annual_kwh('batt_drawn') == pytest.approx(365 * 1.5)
+
+
+# ─── rebased EV year (second car) ────────────────────────────────────────────
+
+def _ev_proj(months_kwh, year=2026, split=(0.1, 0.9, 0.0)):
+    """One day per listed month with total EV kWh, split peak/off-peak/from-PV."""
+    p = SeasonalProjection()
+    for month, kwh in months_kwh.items():
+        p.add_day(f'{year}-{month:02d}-01', {'ev_peak': kwh * split[0], 'ev_off_peak': kwh * split[1],
+                                            'ev_from_pv': kwh * split[2]})
+    return p
+
+
+def test_rebased_ev_scales_unseen_months_by_overlap_ratio():
+    before = _ev_proj({m: 5.0 for m in range(1, 13)}, year=2025, split=(0.5, 0.5, 0.0))
+    after = _ev_proj({m: 12.0 for m in range(5, 11)}, split=(0.1, 0.9, 0.05))   # May-Oct, ×2.4
+    ev, ratio, months = rebased_annual_ev(before, after)
+    assert months == 6 and ratio == pytest.approx(2.4)
+    assert ev['ev_peak'] + ev['ev_off_peak'] == pytest.approx(365 * 12.0)
+    assert ev['ev_peak'] == pytest.approx(365 * 12.0 * 0.1)        # split follows the after period
+    assert ev['ev_from_pv'] == pytest.approx(365 * 12.0 * 0.05)
+
+
+def test_rebased_ev_without_after_data_is_seasonal():
+    before = _ev_proj({m: 5.0 for m in range(1, 13)}, year=2025)
+    ev, ratio, months = rebased_annual_ev(before, SeasonalProjection())
+    assert months == 0 and ratio == 1.0
+    assert ev['ev_peak'] + ev['ev_off_peak'] == pytest.approx(365 * 5.0)
+
+
+def test_rebased_ev_unseen_months_take_the_average():
+    after = _ev_proj({6: 10.0, 7: 10.0})
+    ev, ratio, _ = rebased_annual_ev(SeasonalProjection(), after)
+    assert ratio == 1.0 and ev['ev_peak'] + ev['ev_off_peak'] == pytest.approx(365 * 10.0)
+
+
+class _EvDay(MockEnergyDay):
+    """Off-peak-only day: 1 kWh of house import plus ``ev_kwh`` of EV charging."""
+    def __init__(self, ev_kwh):
+        super().__init__(calc_import=(ev_kwh + 1) * 1000, calc_import_offpeak=(ev_kwh + 1) * 1000,
+                         calc_load=(ev_kwh + 1) * 1000, calc_load_offpeak=(ev_kwh + 1) * 1000)
+        self._ev = ev_kwh * 1000
+
+    def get_calc_ev(self, qtype=QueryType.BOTH):
+        return 0.0 if qtype == QueryType.PEAK else self._ev
+
+    def get_calc_ev_from_pv(self):
+        return 0.0
+
+
+def test_energy_prices_ev_basis_rebases_ev_and_import():
+    def run(basis):
+        ep = EnergyPrices(PRICES, VirtualBattery(PriceData()), battery_enabled=False, ev_basis_from=basis)
+        for date, ev_kwh in [(f'2025-{m:02d}-15', 10.0) for m in range(1, 13)] + \
+                            [(f'2026-{m:02d}-15', 20.0) for m in range(1, 7)]:
+            ep.check_date(date)
+            ep.add_data(_EvDay(ev_kwh))
+        return ep.get_derived()
+    seasonal, rebased = run(''), run('2026-01-01')
+    # Jan-Jun average 15 kWh/day (both years), Jul-Dec 10
+    assert seasonal['annual_ev_kwh'] == pytest.approx(181 * 15 + 184 * 10, abs=0.1)
+    assert rebased['annual_ev_kwh'] == pytest.approx(365 * 20.0, abs=0.1)
+    assert rebased['ev_basis_ratio'] == pytest.approx(2.0) and rebased['ev_basis_months'] == 6
+    # house off-peak import (1 kWh/day) is kept; only the EV part is rebased
+    assert rebased['annual_import_off_peak_kwh'] - rebased['annual_ev_kwh'] == pytest.approx(365, abs=0.2)

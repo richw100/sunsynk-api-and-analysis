@@ -67,6 +67,10 @@ class SeasonalProjection:
             return 0.0
         return 365 * sum(month[key] for month in self._kwh) / self.days
 
+    def monthly_daily_avg(self, key: str) -> dict:
+        """{month index 0-11: average kWh/day} for every calendar month seen."""
+        return {m: self._kwh[m][key] / self._days[m] for m in range(12) if self._days[m]}
+
     def annual_money(self, rates: dict) -> dict:
         """Annual £: solar self-consumption, export (SEG), their sum, and the virtual
         battery's net saving (same formula as VirtualBattery.get_savings)."""
@@ -83,3 +87,38 @@ class SeasonalProjection:
             'solar': self_consumption + export,
             'battery': battery,
         }
+
+
+EV_KEYS = ('ev_peak', 'ev_off_peak', 'ev_from_pv')
+
+
+def rebased_annual_ev(before: SeasonalProjection, after: SeasonalProjection):
+    """A year of EV charging at the level seen since a change in use (e.g. a second car).
+
+    Calendar months seen since the change (``after``) count as measured. A month seen only
+    before it is scaled by ``ratio``: the after/before kWh ratio over the calendar months both
+    periods share, so this year's growth carries over, together with last year's seasonal
+    shape. The peak/off-peak/solar split follows the after period, i.e. current charging habits.
+    Returns ``({key: annual kWh}, ratio, measured_months)``. Without overlapping months the
+    ratio is 1, and without any after-period data the result is the plain seasonal year.
+    """
+    def total(proj):
+        peak, off = proj.monthly_daily_avg('ev_peak'), proj.monthly_daily_avg('ev_off_peak')
+        return {m: peak.get(m, 0.0) + off.get(m, 0.0) for m in set(peak) | set(off)}
+
+    b, a = total(before), total(after)
+    if not a:
+        return {k: before.annual_kwh(k) for k in EV_KEYS}, 1.0, 0
+    shared = [m for m in a if m in b]
+    b_shared = sum(b[m] * DAYS_IN_MONTH[m] for m in shared)
+    ratio = sum(a[m] * DAYS_IN_MONTH[m] for m in shared) / b_shared if b_shared > 0 else 1.0
+    year = sum((a[m] if m in a else b.get(m, 0.0) * ratio) * DAYS_IN_MONTH[m] for m in range(12))
+    if len(a) + sum(1 for m in b if m not in a) < 12:     # months never seen: average the rest
+        seen = set(a) | set(b)
+        year = year * 365 / sum(DAYS_IN_MONTH[m] for m in seen)
+    split = {k: sum(v * DAYS_IN_MONTH[m] for m, v in after.monthly_daily_avg(k).items())
+             for k in EV_KEYS}
+    after_total = split['ev_peak'] + split['ev_off_peak']
+    ev = {k: year * split[k] / after_total if after_total else 0.0 for k in EV_KEYS}
+    return ev, ratio, len(a)
+

@@ -414,6 +414,7 @@ async def main():
         off_peak_shift_enabled=bool(re.match('^on', str(settings['offPeakShift']), re.IGNORECASE)),
         battery_enabled=battery_enabled,
         battery_price=battery_price,
+        ev_basis_from=str(settings['evBasisFrom']),
     )
     builder = DailySeriesBuilder(cumulative_investment)
     ev_profiles = _load_ev_profiles(settings)

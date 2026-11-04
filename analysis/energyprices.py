@@ -4,7 +4,7 @@ from datetime import datetime
 from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energysummary import EnergySummary, EnergySummaryAggregator, QueryType
-from analysis.projection import SeasonalProjection, latest_rates
+from analysis.projection import EV_KEYS, SeasonalProjection, latest_rates, rebased_annual_ev
 
 
 def _battery_warnings(battery: VirtualBattery, pd: PriceData) -> list:
@@ -50,7 +50,7 @@ class EnergyPrices:
     def __init__(self, prices, battery: VirtualBattery, original_price: float = None,
                  label: str = "", off_peak_baseline_kwh: float = 0.96,
                  off_peak_shift_enabled: bool = True, battery_enabled: bool = True,
-                 battery_price: float = 0.0):
+                 battery_price: float = 0.0, ev_basis_from: str = ''):
         self.prices = prices
         self.label = label
         self._off_peak_baseline_kwh = off_peak_baseline_kwh
@@ -70,6 +70,10 @@ class EnergyPrices:
         self.projection = SeasonalProjection()
         self._current_date = None
         self._battery_seen = (0.0, 0.0, 0.0, 0.0)
+        # EV use changed on ev_basis_from (e.g. a second car): project EV from that level.
+        self.ev_basis_from = ev_basis_from or ''
+        self._ev_before = SeasonalProjection()
+        self._ev_after = SeasonalProjection()
 
     def _make_battery(self, price_data: PriceData) -> VirtualBattery:
         return VirtualBattery(
@@ -129,7 +133,11 @@ class EnergyPrices:
         self.changed = True
         self.aggregator.update_last_summary(energyday)
         if self._current_date:
-            self.projection.add_day(self._current_date, self._projection_kwh(energyday))
+            kwh = self._projection_kwh(energyday)
+            self.projection.add_day(self._current_date, kwh)
+            if self.ev_basis_from:
+                ev = self._ev_after if self._current_date >= self.ev_basis_from else self._ev_before
+                ev.add_day(self._current_date, {k: kwh[k] for k in EV_KEYS if k in kwh})
 
     def _projection_kwh(self, energyday) -> dict:
         """This day's kWh for the projection. Battery figures are the change in the
@@ -184,7 +192,16 @@ class EnergyPrices:
         # Forward-looking figures: seasonally weighted year at the latest tariff rates.
         rates = latest_rates(self.prices)
         annual = self.projection.annual_money(rates)
-        ev_kwh = self.projection.annual_kwh
+        # EV year: seasonal, or rebased on the level since ev_basis_from. Import is then the
+        # seasonal house-only import plus that EV year's grid share.
+        seasonal_ev = {k: self.projection.annual_kwh(k) for k in EV_KEYS}
+        ev, ev_ratio, ev_months = (rebased_annual_ev(self._ev_before, self._ev_after)
+                                   if self.ev_basis_from else (seasonal_ev, None, 0))
+        import_peak = (self.projection.annual_kwh('import_peak')
+                       - (seasonal_ev['ev_peak'] - seasonal_ev['ev_from_pv'])
+                       + (ev['ev_peak'] - ev['ev_from_pv']))
+        import_off_peak = (self.projection.annual_kwh('import_off_peak')
+                           - seasonal_ev['ev_off_peak'] + ev['ev_off_peak'])
         annualised_solar = round(annual['solar'], 2)
         annualised_battery = round(annual['battery'], 2) if self.battery_enabled else 0
         if self.battery_price > 0 and annualised_battery > 0:
@@ -217,18 +234,18 @@ class EnergyPrices:
             "annualised_solar_export": round(annual['export'], 2),
             "solar_payback_years": solar_payback_years,
             "solar_payback_remaining_years": solar_payback_remaining_years,
-            "annual_import_peak_kwh": round(self.projection.annual_kwh('import_peak'), 1),
-            "annual_import_off_peak_kwh": round(self.projection.annual_kwh('import_off_peak'), 1),
-            "annual_import_peak_cost": round(self.projection.annual_kwh('import_peak') * rates['peak'], 2),
-            "annual_import_off_peak_cost": round(
-                self.projection.annual_kwh('import_off_peak') * rates['off_peak'], 2),
+            "annual_import_peak_kwh": round(import_peak, 1),
+            "annual_import_off_peak_kwh": round(import_off_peak, 1),
+            "annual_import_peak_cost": round(import_peak * rates['peak'], 2),
+            "annual_import_off_peak_cost": round(import_off_peak * rates['off_peak'], 2),
             "annual_standing_charge": round(365 * rates['standing'], 2),
-            "annual_ev_kwh": round(self.projection.annual_kwh('ev_peak')
-                                   + self.projection.annual_kwh('ev_off_peak'), 1),
+            "annual_ev_kwh": round(ev['ev_peak'] + ev['ev_off_peak'], 1),
             "annual_ev_cost": round(
-                (ev_kwh('ev_peak') - ev_kwh('ev_from_pv')) * rates['peak']
-                + ev_kwh('ev_off_peak') * rates['off_peak']
-                + ev_kwh('ev_from_pv') * rates['export'], 2),
+                (ev['ev_peak'] - ev['ev_from_pv']) * rates['peak']
+                + ev['ev_off_peak'] * rates['off_peak']
+                + ev['ev_from_pv'] * rates['export'], 2),
+            "ev_basis_ratio": ev_ratio,
+            "ev_basis_months": ev_months,
             "projection_rates": rates,
             "projection_seasonal": self.projection.seasonal,
             "projection_months": self.projection.months_covered,
@@ -352,6 +369,10 @@ class EnergyPrices:
               f" + £{t['total_ev_lost_export']:.2f} foregone export (at the rates paid)")
         print(f"  Projected: {d['annual_ev_kwh']:.0f}kWh/year = £{d['annual_ev_cost']:.2f}/year"
               f"  ({self.projection_note()})")
+        if self.ev_basis_from and d['ev_basis_months']:
+            print(f"             at the level since {self.ev_basis_from}: {d['ev_basis_months']}"
+                  f" calendar months measured, the rest = earlier same months"
+                  f" × {d['ev_basis_ratio']:.2f}; peak/off-peak split as since then")
 
     def print_totals(self):
         if not self.off_peak_shift_enabled:
