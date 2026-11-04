@@ -126,7 +126,7 @@ class EnergyDay(Resource):
     def __init__(self, data, date: str, month: EnergyMonth, battery: VirtualBattery,
                  offpeakstart: str, offpeakstop: str,
                  pv_extra_ratio: float = 0.0, pv_extra_clip_w=None,
-                 export_correction: ExportCorrection = None):
+                 export_correction: ExportCorrection = None, ev_watts: dict = None):
         self.data = data
         self.export_correction = export_correction or ExportCorrection()
         # Gap-filled copies of the PV/Grid/Load series; self.data is never mutated.
@@ -163,14 +163,44 @@ class EnergyDay(Resource):
                 records.append({**r, 'value': str(float(r['value']) + sign * extra)})
             return {'label': item['label'], 'records': records}
 
+        # EV charging ({'HH:MM': W}, see evcharging.py) happens beyond the inverter's CT: add it
+        # to Load and to the net Grid meter, so it soaks up CT-measured export first and the
+        # rest is import. Slots with no Sunsynk sample get one carrying only the EV draw.
+        # The battery simulation keeps the CT-side Grid (a battery there couldn't feed the car).
+        ev_watts = {t: w for t, w in (ev_watts or {}).items() if w > 0}
+        self.ev_from_pv = 0.0   # Wh of EV charging met by PV the CT counted as export
+
+        def _add_ev(item):
+            if not ev_watts:
+                return item
+            seen = {r['time'] for r in item['records']}
+            if item['label'] == "Grid":
+                self.ev_from_pv = sum(
+                    min(ev_watts.get(r['time'], 0.0), max(0.0, -float(r['value'])))
+                    for r in item['records']) / 12
+            records = [{**r, 'value': str(float(r['value']) + ev_watts.get(r['time'], 0.0))}
+                       for r in item['records']]
+            records += [{'time': t, 'value': str(w)} for t, w in ev_watts.items() if t not in seen]
+            return {'label': item['label'], 'records': sorted(records, key=lambda r: r['time'])}
+
+        self.ev = IntervalSummary({'label': 'EV', 'records': sorted(
+            ({'time': t, 'value': str(w)} for t, w in ev_watts.items()), key=lambda r: r['time'])},
+            None, offpeakstart, offpeakstop)
+        self._battery_grid = None
         for item in energy:
             if item['label'] == "PV":
                 self.pv = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop)
             elif item['label'] == "Grid":
-                self.grid = IntervalSummary(_boost(item), battery, offpeakstart, offpeakstop, is_load=True,
+                grid_item = _boost(item)
+                self.grid = IntervalSummary(_add_ev(grid_item), battery if not ev_watts else None,
+                                            offpeakstart, offpeakstop, is_load=True,
                                             export_correction=self.export_correction)
+                if ev_watts:
+                    self._battery_grid = IntervalSummary(
+                        grid_item, battery, offpeakstart, offpeakstop, is_load=True,
+                        export_correction=self.export_correction)
             elif item['label'] == "Load":
-                self.load = IntervalSummary(item, battery, offpeakstart, offpeakstop)
+                self.load = IntervalSummary(_add_ev(item), battery, offpeakstart, offpeakstop)
 
         self.supplied_load = next((float(r['value']) for r in month.get_load()['records'] if r['time'] == date), 0.0)
         self.supplied_import = next((float(r['value']) for r in month.get_import()['records'] if r['time'] == date), 0.0)
@@ -181,7 +211,7 @@ class EnergyDay(Resource):
         """Replay battery simulation over pre-parsed Grid intervals (no string parsing)."""
         recharged = False
         battery_ran_out = False
-        for time_dt, wh in self.grid._parsed:
+        for time_dt, wh in (self._battery_grid or self.grid)._parsed:
             if self._start_dt <= time_dt < self._stop_dt:
                 if not recharged:
                     battery.recharge()
@@ -227,6 +257,18 @@ class EnergyDay(Resource):
 
     def get_calc_pv(self):
         return self.pv.peak + self.pv.offpeak
+
+    def get_calc_ev(self, qtype: QueryType = QueryType.BOTH):
+        """Wh drawn by the EV charger (included in load and grid figures; 0 without EV data)."""
+        if qtype == QueryType.PEAK:
+            return self.ev.peak
+        if qtype == QueryType.OFFPEAK:
+            return self.ev.offpeak
+        return self.ev.peak + self.ev.offpeak
+
+    def get_calc_ev_from_pv(self):
+        """Wh of EV charging supplied by solar that would otherwise have been exported."""
+        return self.ev_from_pv
 
     def get_pv_clip_loss(self):
         """Wh of added-panel generation discarded by the microinverter AC clip (0 if none)."""

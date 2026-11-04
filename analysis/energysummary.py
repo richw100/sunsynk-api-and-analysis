@@ -37,6 +37,13 @@ class EnergySummary:
 
         self.total_pv_clip_loss = 0
 
+        # EV charging beyond the inverter CT (Wh); already included in load/import/export above.
+        self.total_ev_peak = 0
+        self.total_ev_off_peak = 0
+        self.total_ev_from_pv = 0
+        self.ev_import_cost = 0
+        self.ev_lost_export = 0
+
         self.off_peak_excess = 0
         self.off_peak_excess_savings = 0
 
@@ -105,6 +112,10 @@ class EnergySummary:
         self.total_calc_export_peak += energyday.get_calc_export(QueryType.PEAK)
 
         self.total_pv_clip_loss += energyday.get_pv_clip_loss()
+        if hasattr(energyday, 'get_calc_ev'):
+            self.total_ev_peak += energyday.get_calc_ev(QueryType.PEAK)
+            self.total_ev_off_peak += energyday.get_calc_ev(QueryType.OFFPEAK)
+            self.total_ev_from_pv += energyday.get_calc_ev_from_pv()
 
         self.total_saved_calc += energyday.get_calc_load() - energyday.get_calc_import()
         self.total_saved_supplied += energyday.get_supplied_load() - energyday.get_supplied_import()
@@ -123,8 +134,17 @@ class EnergySummary:
         self.total_savings_calc = self.total_saved_amount_calc + self.total_export_amount_calc
         self.total_savings_supplied = self.total_saved_amount_supplied + self.total_export_amount_supplied
 
-        self.off_peak_excess = (self.total_calc_import_off_peak/1000) - (self.price_data.off_peak_average*self.days)
+        # EV charging is excluded: it's car charging, not house load shifted to off-peak.
+        self.off_peak_excess = ((self.total_calc_import_off_peak - self.total_ev_off_peak)/1000
+                                - self.price_data.off_peak_average*self.days)
         self.off_peak_excess_savings = self.off_peak_excess * (self.price_data.current_peak - self.price_data.current_off_peak)
+
+        # EV energy: PV that would have been exported costs the lost SEG; the rest is imported.
+        self.ev_import_cost = (
+            (self.total_ev_peak - self.total_ev_from_pv)/1000 * self.price_data.current_peak
+            + self.total_ev_off_peak/1000 * self.price_data.current_off_peak
+        )
+        self.ev_lost_export = self.total_ev_from_pv/1000 * self.price_data.current_export
 
         standing_charge = self.days * self.price_data.standing_charge
 
@@ -162,6 +182,11 @@ class EnergySummaryAggregator:
             "total_calc_import_peak": 0,
             "total_calc_export_peak": 0,
             "total_pv_clip_loss": 0,
+            "total_ev_peak": 0,
+            "total_ev_off_peak": 0,
+            "total_ev_from_pv": 0,
+            "total_ev_import_cost": 0,
+            "total_ev_lost_export": 0,
             "total_off_peak_excess": 0,
             "total_off_peak_excess_savings": 0,
             "days": 0,
@@ -200,6 +225,11 @@ class EnergySummaryAggregator:
             totals["total_calc_import_peak"] += summary.total_calc_import_peak/1000
             totals["total_calc_export_peak"] += summary.total_calc_export_peak/1000
             totals["total_pv_clip_loss"] += summary.total_pv_clip_loss/1000
+            totals["total_ev_peak"] += summary.total_ev_peak/1000
+            totals["total_ev_off_peak"] += summary.total_ev_off_peak/1000
+            totals["total_ev_from_pv"] += summary.total_ev_from_pv/1000
+            totals["total_ev_import_cost"] += summary.ev_import_cost
+            totals["total_ev_lost_export"] += summary.ev_lost_export
             totals["total_off_peak_excess"] += summary.off_peak_excess
             totals["total_off_peak_excess_savings"] += summary.off_peak_excess_savings
             totals["days"] += summary.days

@@ -17,7 +17,7 @@ DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 #   batt_grid_charge is grid energy bought (charge_amount / charge_efficiency);
 #   batt_pv_diverted is raw PV surplus sent to the battery instead of exported.
 KEYS = ('load_peak', 'load_off_peak', 'import_peak', 'import_off_peak', 'export',
-        'pv', 'pv_clip_loss',
+        'pv', 'pv_clip_loss', 'ev_peak', 'ev_off_peak', 'ev_from_pv',
         'batt_drawn', 'batt_exported', 'batt_grid_charge', 'batt_pv_diverted')
 
 

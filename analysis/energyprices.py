@@ -147,6 +147,7 @@ class EnergyPrices:
             'export': energyday.get_calc_export(QueryType.BOTH) / 1000,
             'pv': energyday.get_calc_pv() / 1000,
             'pv_clip_loss': energyday.get_pv_clip_loss() / 1000,
+            **self._ev_kwh(energyday),
             'batt_drawn': drawn,
             'batt_exported': exported,
             'batt_grid_charge': grid_charge,
@@ -183,6 +184,7 @@ class EnergyPrices:
         # Forward-looking figures: seasonally weighted year at the latest tariff rates.
         rates = latest_rates(self.prices)
         annual = self.projection.annual_money(rates)
+        ev_kwh = self.projection.annual_kwh
         annualised_solar = round(annual['solar'], 2)
         annualised_battery = round(annual['battery'], 2) if self.battery_enabled else 0
         if self.battery_price > 0 and annualised_battery > 0:
@@ -221,9 +223,26 @@ class EnergyPrices:
             "annual_import_off_peak_cost": round(
                 self.projection.annual_kwh('import_off_peak') * rates['off_peak'], 2),
             "annual_standing_charge": round(365 * rates['standing'], 2),
+            "annual_ev_kwh": round(self.projection.annual_kwh('ev_peak')
+                                   + self.projection.annual_kwh('ev_off_peak'), 1),
+            "annual_ev_cost": round(
+                (ev_kwh('ev_peak') - ev_kwh('ev_from_pv')) * rates['peak']
+                + ev_kwh('ev_off_peak') * rates['off_peak']
+                + ev_kwh('ev_from_pv') * rates['export'], 2),
             "projection_rates": rates,
             "projection_seasonal": self.projection.seasonal,
             "projection_months": self.projection.months_covered,
+        }
+
+    @staticmethod
+    def _ev_kwh(energyday) -> dict:
+        """This day's EV kWh for the projection (stub days without EV support count as 0)."""
+        if not hasattr(energyday, 'get_calc_ev'):
+            return {}
+        return {
+            'ev_peak': energyday.get_calc_ev(QueryType.PEAK) / 1000,
+            'ev_off_peak': energyday.get_calc_ev(QueryType.OFFPEAK) / 1000,
+            'ev_from_pv': energyday.get_calc_ev_from_pv() / 1000,
         }
 
     def projection_note(self) -> str:
@@ -317,6 +336,22 @@ class EnergyPrices:
         print(f"  Total:     {peak + off:7.1f}kWh   £{energy:.2f}"
               f"  + standing charge £{d['annual_standing_charge']:.2f}"
               f" = £{energy + d['annual_standing_charge']:.2f}/year")
+
+    def print_ev(self):
+        """EV charger section (only when EV data was added)."""
+        t = self.get_grand_totals()
+        peak, off, pv = t['total_ev_peak'], t['total_ev_off_peak'], t['total_ev_from_pv']
+        if peak + off <= 0:
+            return
+        d = self.get_derived()
+        print("")
+        print("EV CHARGING  (Indra charger, beyond the inverter CT; included in load/import above)")
+        print(f"  Charged:   {peak + off:.1f}kWh   Peak: {peak:.1f}kWh   Off-peak: {off:.1f}kWh"
+              f"   From solar: {pv:.1f}kWh")
+        print(f"  Cost:      £{t['total_ev_import_cost']:.2f} import"
+              f" + £{t['total_ev_lost_export']:.2f} foregone export (at the rates paid)")
+        print(f"  Projected: {d['annual_ev_kwh']:.0f}kWh/year = £{d['annual_ev_cost']:.2f}/year"
+              f"  ({self.projection_note()})")
 
     def print_totals(self):
         if not self.off_peak_shift_enabled:

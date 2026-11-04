@@ -718,3 +718,49 @@ def test_energyday_run_battery_uses_export_correction():
                     export_correction=ExportCorrection(gain=0.5, standby_w=12))
     day.run_battery(_Battery())
     assert charged == pytest.approx([0.5 * 200 / 12 - 1.0, 0.5 * 1500 / 12 - 1.0])
+
+
+# ─── EV charging beyond the CT ───────────────────────────────────────────────
+
+def _ev_day(ev_watts):
+    return EnergyDay(_boost_day_data(), '2025-06-10', _FakeMonth(), None, '00:00', '06:00',
+                     export_correction=ExportCorrection(gain=1.0, standby_w=0), ev_watts=ev_watts)
+
+
+def test_energyday_ev_adds_to_load_and_import_and_soaks_up_export():
+    base, ev = _ev_day(None), _ev_day({'00:00': 7000, '12:00': 1000, '03:00': 2400})
+    assert ev.get_calc_ev(QueryType.OFFPEAK) == pytest.approx((7000 + 2400) / 12)   # 03:00 had no sample
+    assert ev.get_calc_ev(QueryType.PEAK) == pytest.approx(1000 / 12)
+    assert ev.get_calc_load() - base.get_calc_load() == pytest.approx((7000 + 1000 + 2400) / 12)
+    # 12:00 was exporting 1500 W: the EV takes 1000 W of it, so export drops and import doesn't rise
+    assert base.get_calc_export() - ev.get_calc_export() == pytest.approx(1000 / 12)
+    assert ev.get_calc_ev_from_pv() == pytest.approx(1000 / 12)
+    assert ev.get_calc_import(QueryType.PEAK) == pytest.approx(base.get_calc_import(QueryType.PEAK))
+    assert ev.get_calc_import(QueryType.OFFPEAK) - base.get_calc_import(QueryType.OFFPEAK) == \
+        pytest.approx((7000 + 2400) / 12)
+
+
+def test_energyday_ev_not_seen_by_battery_simulation():
+    seen = []
+
+    class _Battery:
+        def recharge(self): pass
+        def utilise(self, wh, t): seen.append(('use', wh)); return 0
+        def pv_charge(self, wh, t): seen.append(('pv', wh))
+        def set_ran_out(self): pass
+
+    for ev in (None, {'12:00': 1000, '09:00': 5000}):
+        seen.clear()
+        _ev_day(ev).run_battery(_Battery())
+        assert [kind for kind, _ in seen] == ['pv', 'use', 'pv']
+        assert [wh for _, wh in seen] == pytest.approx([200 / 12, 100 / 12, 1500 / 12])
+
+
+def test_energy_summary_off_peak_excess_excludes_ev():
+    summary, pd, _ = make_summary()
+    day = _ev_day({'00:00': 12000})
+    summary.add_data(day)
+    summary.recalculate()
+    house_off_peak = (day.get_calc_import(QueryType.OFFPEAK) - day.get_calc_ev(QueryType.OFFPEAK)) / 1000
+    assert summary.off_peak_excess == pytest.approx(house_off_peak - pd.off_peak_average)
+    assert summary.ev_import_cost == pytest.approx(12000 / 12 / 1000 * pd.current_off_peak)

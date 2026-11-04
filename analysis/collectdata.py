@@ -14,6 +14,7 @@ from analysis.pricedata import PriceData
 from analysis.virtualbattery import VirtualBattery
 from analysis.energyprices import EnergyPrices, _battery_warnings
 from analysis.projection import latest_rates
+from analysis.evcharging import load_ev_profiles
 
 from datetime import datetime
 from tqdm import tqdm
@@ -110,6 +111,10 @@ def _parse_cli_args(argv):
             overrides['plotlyCdn'] = value
         elif key_lower == 'fusedatadir':
             overrides['fuseDataDir'] = value
+        elif key_lower == 'evcharging':
+            overrides['evCharging'] = value
+        elif key_lower == 'evdatadir':
+            overrides['evDataDir'] = value
         elif key_lower == 'exportgain':
             overrides.setdefault('exportCorrection', {})['gain'] = float(value)
         elif key_lower == 'chargerstandbyw':
@@ -149,6 +154,8 @@ def _load_settings(argv):
         'rollingWindow': 4,      # graphs.py only: rolling-average window in days
         'plotlyCdn': 'OFF',      # graphs.py only: OFF embeds plotly.js, ON loads from CDN
         'fuseDataDir': 'fuseenergydata',  # graphs.py only: Fuse meter-export cache to overlay
+        'evCharging': 'ON',      # add the Indra EV charger (outside the CT) to load/import
+        'evDataDir': 'indraData',
         'virtualBattery': {
             'enabled': 'ON',
             'batterySize': 5000,
@@ -271,6 +278,11 @@ def _print_usage():
     print("  chargerStandbyW:N       Load between inverter CT and meter, covered by PV while")
     print("                          exporting and credited as house load (default: 27.6)")
     print("  (config.json 'exportCorrection' also takes chargerOff: [[from, to], ...] date ranges)")
+    print("")
+    print("EV charging (Indra charger, outside the inverter CT; download with indradata.py):")
+    print("  evCharging:ON|OFF       Add EV charging to load/import/export figures (default: ON;")
+    print("                          no effect if evDataDir has no data)")
+    print("  evDataDir:DIR           Indra cache directory (default: indraData)")
     print("")
     print("Plug-in solar (PV boost) options:")
     print("  existingPvWatts:N       Current array size in W for scaling (default: 3115 = 7x445W)")
@@ -569,12 +581,27 @@ def _print_pv_boost_comparison(all_boost_results, existing_pv_watts, battery_idx
     print("  and DC-side losses are not modelled; payback uses the latest tariff rates.")
 
 
+def _load_ev_profiles(settings) -> dict:
+    """EV charging profiles per date (evcharging.py), or {} when evCharging is OFF / no data."""
+    if not re.match('^on', str(settings['evCharging']), re.IGNORECASE):
+        print("EV charging: OFF")
+        return {}
+    profiles = load_ev_profiles(settings['evDataDir'])
+    if profiles:
+        print(f"EV charging: {len(profiles)} days from {settings['evDataDir']}/"
+              " added to load/import")
+    else:
+        print(f"EV charging: no data in {settings['evDataDir']}/ (run indradata.py)")
+    return profiles
+
+
 async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                              pv_extra_ratio: float, pv_extra_clip_w,
                              start_date: str, stop_date: str, scan_from_year: int,
                              show_days: bool,
                              month_cache: dict, day_raw_cache: dict, energyday_cache: dict,
-                             cache_stats: dict, export_correction_cfg: dict = None):
+                             cache_stats: dict, export_correction_cfg: dict = None,
+                             ev_profiles: dict = None):
     """Async generator over one (battery, price-file, PV-boost) scenario's date range.
 
     Fetches/caches EnergyMonth (month_cache) and raw day JSON (day_raw_cache) via
@@ -597,6 +624,7 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
 
     `export_correction_cfg` (settings['exportCorrection']) is resolved per date by
     _export_correction_for(); None means the ExportCorrection defaults.
+    `ev_profiles` ({date: {'HH:MM': W}}, from _load_ev_profiles) adds EV charging to each day.
     """
     current_month = datetime.today().strftime('%Y-%m')
     total_months = (
@@ -646,8 +674,10 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                             offpeakstop = prices.price_data.current_off_peak_stop
                             correction = (_export_correction_for(day['time'], export_correction_cfg)
                                           if export_correction_cfg else ExportCorrection())
+                            ev_watts = (ev_profiles or {}).get(day['time'])
                             ed_key = (f"{day['time']}|{offpeakstart}|{offpeakstop}|{pv_extra_ratio:.6f}|"
-                                      f"{pv_extra_clip_w}|{correction.gain}|{correction.standby_w}")
+                                      f"{pv_extra_clip_w}|{correction.gain}|{correction.standby_w}|"
+                                      f"{bool(ev_watts)}")
 
                             if ed_key not in energyday_cache:
                                 if day['time'] not in day_raw_cache:
@@ -660,7 +690,7 @@ async def _iter_energy_days(client, inverter, prices: EnergyPrices,
                                     day['time'], energymonth,
                                     None, offpeakstart, offpeakstop,
                                     pv_extra_ratio=pv_extra_ratio, pv_extra_clip_w=pv_extra_clip_w,
-                                    export_correction=correction,
+                                    export_correction=correction, ev_watts=ev_watts,
                                 )
                             else:
                                 cache_stats['hits'] += 1
@@ -735,6 +765,7 @@ async def main():
     )
     print(f"originalPrice:£{original_price}")
     print(_describe_export_correction(settings['exportCorrection']))
+    ev_profiles = _load_ev_profiles(settings)
     print(f"existingPvWatts:{existing_pv_watts:.0f}")
     if multi_boost:
         print(f"PV boost options: {len(pv_boosts)}")
@@ -835,7 +866,7 @@ async def main():
                                 client, inverter, prices, pv_extra_ratio, pv_extra_clip_w,
                                 start_date, stop_date, scan_from_year, show_days,
                                 _month_cache, _day_raw_cache, _energyday_cache, _cache_stats,
-                                settings['exportCorrection']):
+                                settings['exportCorrection'], ev_profiles):
                             if show_days:
                                 print(f"Calculating: {date_str}")
                                 energyday.print()
@@ -868,6 +899,7 @@ async def main():
                     if first_battery:
                         prices.print_energy_summary()
                         prices.print_averages()
+                        prices.print_ev()
                         prices.print_costs()
                         prices.print_savings()
                         prices.print_return_on_investment()

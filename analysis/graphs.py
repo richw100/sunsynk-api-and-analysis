@@ -11,7 +11,8 @@ os.chdir(PROJECT_ROOT)
 
 import plotly.graph_objects as go
 
-from analysis.collectdata import _load_settings, _make_battery, _iter_energy_days, _load_price_file
+from analysis.collectdata import (_load_settings, _make_battery, _iter_energy_days, _load_price_file,
+                                  _load_ev_profiles)
 from analysis.fuse_client import load_daily_export_kwh, load_hourly_export_kwh
 from analysis.dailyseries import DailySeriesBuilder
 from analysis.energy_client import SunsynkEnergyClient
@@ -415,6 +416,7 @@ async def main():
         battery_price=battery_price,
     )
     builder = DailySeriesBuilder(cumulative_investment)
+    ev_profiles = _load_ev_profiles(settings)
 
     async with SunsynkEnergyClient(sunsynk_username, sunsynk_password, "https://api.sunsynk.net") as client:
         inverters = await client.get_inverters()
@@ -430,7 +432,7 @@ async def main():
                 client, inverter, prices, pv_extra_ratio, pv_extra_clip_w,
                 start_date, stop_date, scan_from_year, show_days,
                 month_cache, day_raw_cache, energyday_cache, cache_stats,
-                settings['exportCorrection']):
+                settings['exportCorrection'], ev_profiles):
             if show_days:
                 print(f"Calculating: {date_str}")
             builder.add_day(date_str, energyday, prices.price_data, battery_delta)

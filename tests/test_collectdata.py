@@ -11,6 +11,7 @@ from analysis.collectdata import (
     _pv_boost_metrics,
     _iter_energy_days,
     _make_battery,
+    _load_ev_profiles,
 )
 from analysis.energyprices import EnergyPrices
 from analysis.pricedata import PriceData
@@ -257,3 +258,11 @@ def test_export_correction_for_charger_off_ranges_inclusive():
     assert _export_correction_for('2026-08-25', ec).standby_w == 0
     assert _export_correction_for('2026-08-26', ec).standby_w == 11
     assert _export_correction_for('2026-08-26', ec).gain == 0.953
+
+
+def test_ev_charging_settings_and_off_switch(tmp_path):
+    s = _load_settings(['config:/nonexistent.json', 'evCharging:OFF', f'evDataDir:{tmp_path}'])
+    assert s['evCharging'] == 'OFF' and s['evDataDir'] == str(tmp_path)
+    assert _load_ev_profiles(s) == {}
+    assert _load_settings(['config:/nonexistent.json'])['evCharging'] == 'ON'
+    assert _load_ev_profiles({'evCharging': 'ON', 'evDataDir': str(tmp_path / 'empty')}) == {}
