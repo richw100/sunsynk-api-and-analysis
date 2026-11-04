@@ -8,6 +8,8 @@ import com.google.gson.JsonParser
 import com.richw.sunsynk.analysis.EnergyDay
 import com.richw.sunsynk.analysis.EnergyMonth
 import com.richw.sunsynk.analysis.EnergyPrices
+import com.richw.sunsynk.analysis.EvCharging
+import com.richw.sunsynk.api.FuseClient
 import com.richw.sunsynk.analysis.PriceData
 import com.richw.sunsynk.analysis.batteryWarnings
 import com.richw.sunsynk.analysis.round2
@@ -86,6 +88,15 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
             // and rebuild each EnergyDay on demand and let it be garbage-collected.
             val monthCache = mutableMapOf<String, EnergyMonth>()
 
+            // EV charging beyond the CT (Indra), and the Fuse meter's daily export, if downloaded.
+            val dataSources = DataSourceStore(context)
+            val evProfiles = if (settings.isEvChargingOn()) {
+                emit("Loading EV charging…")
+                EvCharging.loadProfiles(dataSources.indraDir)
+            } else emptyMap()
+            val meterExport = FuseClient.loadDailyExportKwh(dataSources.fuseDir)
+            val calcExportByDate = sortedMapOf<String, Double>()   // first pass only
+
             val priceFiles = settings.energyPrices
             val batteryConfigs = settings.batteryConfigs
             val multiBattery = batteryConfigs.size > 1
@@ -123,7 +134,9 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                         offPeakShiftEnabled = settings.isOffPeakShiftOn(),
                         batteryEnabled = batteryEnabled,
                         batteryPrice = batteryConfig.batteryPrice,
+                        evBasisFrom = settings.evBasisFrom,
                     )
+                    val firstPass = allBatteryResults.isEmpty() && allPrices.isEmpty()
 
                     var yearCount = settings.scanFromYear
                     var hasYear = true
@@ -170,9 +183,11 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                                         dayDate, energyMonth,
                                         null, opStart, opStop,
                                         settings.exportCorrection.forDate(dayDate),
+                                        evProfiles[dayDate],
                                     )
                                     energyDay.runBattery(prices.battery)
                                     prices.addData(energyDay)
+                                    if (firstPass) calcExportByDate[dayDate] = energyDay.getCalcExport() / 1000
                                 }
                             }
                         }
@@ -188,13 +203,20 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
 
             emit("Building report…")
 
+            val shared = calcExportByDate.keys.filter { it in meterExport }
             AnalysisResult(
                 scenarios = allBatteryResults.map { (bcLabel, prices) ->
                     BatteryScenario(
                         label = bcLabel,
                         priceResults = prices.map { it.toResult() },
                     )
-                }
+                },
+                meter = if (shared.isEmpty()) null else MeterComparison(
+                    days = shared.size, from = shared.first(), to = shared.last(),
+                    inverterKwh = shared.sumOf { calcExportByDate[it]!! }.round2(),
+                    meterKwh = shared.sumOf { meterExport[it]!! }.round2(),
+                ),
+                evDays = evProfiles.size,
             )
         }
 
@@ -264,6 +286,17 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                 solarPaybackYears = solarPaybackYears,
                 solarPaybackRemainingYears = d["solar_payback_remaining_years"] as? Double,
                 projectionNote = projectionNote(),
+            ),
+            ev = EvData(
+                chargedKwh = (t["total_ev_peak"]!! + t["total_ev_off_peak"]!!).round2(),
+                peakKwh = t["total_ev_peak"]!!,
+                offPeakKwh = t["total_ev_off_peak"]!!,
+                fromSolarKwh = t["total_ev_from_pv"]!!,
+                importCost = t["total_ev_import_cost"]!!,
+                lostExport = t["total_ev_lost_export"]!!,
+                annualKwh = d["annual_ev_kwh"] as Double,
+                annualCost = d["annual_ev_cost"] as Double,
+                basisNote = evBasisNote(d),
             ),
             battery = BatteryData(
                 enabled = batteryEnabled,

@@ -5,7 +5,7 @@
     "stopDate": "",
     "scanFromYear": 2025,
     "originalPrice": 6210,
-    "_commentOriginalPrice": "Installation cost. No adjustment for solar used to charge the car: the EV charger (Indra, beyond the CT) is now modelled directly via evCharging, which counts PV that charged the car as self-consumed. The Android app, which has no EV data, keeps the old -£3.53 adjustment in its bundled assets/config.json.",
+    "_commentOriginalPrice": "Installation cost. No adjustment for solar used to charge the car: the EV charger (Indra, beyond the CT) is now modelled directly via evCharging, which counts PV that charged the car as self-consumed.",
     "offPeakShift": "ON",
     "offPeakBaseline": 0.96,
     "evCharging": "ON",

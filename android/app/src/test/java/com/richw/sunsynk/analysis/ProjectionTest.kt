@@ -59,4 +59,38 @@ class ProjectionTest {
         assertEquals(365 * 4.0 * 0.13, m.export, 1e-6)
         assertEquals(365 * (2.0 * 0.25 + 0.5 * 0.13 - 1.0 * 0.04 - 1.0 * 0.13), m.battery, 1e-6)
     }
+
+    // ── rebased EV year (parity with tests/test_projection.py) ───────────────
+
+    private fun evProj(months: Map<Int, Double>, year: Int = 2026, split: Triple<Double, Double, Double> = Triple(0.1, 0.9, 0.0)) =
+        SeasonalProjection().apply {
+            for ((m, kwh) in months) addDay("%04d-%02d-01".format(year, m),
+                mapOf("ev_peak" to kwh * split.first, "ev_off_peak" to kwh * split.second, "ev_from_pv" to kwh * split.third))
+        }
+
+    @Test
+    fun rebasedEvScalesUnseenMonthsByOverlapRatio() {
+        val before = evProj((1..12).associateWith { 5.0 }, 2025, Triple(0.5, 0.5, 0.0))
+        val after = evProj((5..10).associateWith { 12.0 }, split = Triple(0.1, 0.9, 0.05))
+        val r = rebasedAnnualEv(before, after)
+        assertEquals(6, r.measuredMonths)
+        assertEquals(2.4, r.ratio, 1e-9)
+        assertEquals(365 * 12.0, r.kwh["ev_peak"]!! + r.kwh["ev_off_peak"]!!, 1e-6)
+        assertEquals(365 * 12.0 * 0.1, r.kwh["ev_peak"]!!, 1e-6)
+        assertEquals(365 * 12.0 * 0.05, r.kwh["ev_from_pv"]!!, 1e-6)
+    }
+
+    @Test
+    fun rebasedEvWithoutAfterDataIsSeasonal() {
+        val r = rebasedAnnualEv(evProj((1..12).associateWith { 5.0 }, 2025), SeasonalProjection())
+        assertEquals(0, r.measuredMonths)
+        assertEquals(1.0, r.ratio, 0.0)
+        assertEquals(365 * 5.0, r.kwh["ev_peak"]!! + r.kwh["ev_off_peak"]!!, 1e-6)
+    }
+
+    @Test
+    fun rebasedEvUnseenMonthsTakeTheAverage() {
+        val r = rebasedAnnualEv(SeasonalProjection(), evProj(mapOf(6 to 10.0, 7 to 10.0)))
+        assertEquals(365 * 10.0, r.kwh["ev_peak"]!! + r.kwh["ev_off_peak"]!!, 1e-6)
+    }
 }

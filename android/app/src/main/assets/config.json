@@ -4,15 +4,23 @@
     "startDate": "",
     "stopDate": "",
     "scanFromYear": 2025,
-    "originalPrice": 6206.47,
-    "_commentOriginalPrice": "Original price = £6210 Take off £3.53 - adjusting for solar used to charge car June '25 - May '26 (32 kWh * .2767-.0165)",
+    "originalPrice": 6210,
+    "_commentOriginalPrice": "Installation cost. No adjustment for solar used to charge the car: the EV charger (Indra, beyond the CT) is now modelled directly via evCharging, which counts PV that charged the car as self-consumed.",
     "offPeakShift": "ON",
     "offPeakBaseline": 0.96,
+    "evCharging": "ON",
+    "evBasisFrom": "2026-05-01",
+    "_commentEvBasisFrom": "Second EV from May 2026: project EV charging at the level seen since then",
     "exportCorrection": {
         "_comment": "Calibrated vs Fuse smart meter 7 Aug-30 Sep 2026: inverter CT over-reads export ~4.7% (gain); EV charger standby ~11 W while exporting, charger off 6-25 Aug",
         "gain": 0.953,
         "chargerStandbyW": 11,
         "chargerOff": [["2026-08-06", "2026-08-25"]]
+    },
+    "pvCheck": {
+        "_comment": "Weather-normalised PV health check (analysis/pvcheck.py). Orientation fitted from Jun-Oct 2025 data; site latitude/longitude live in git-ignored config.local.json.",
+        "tiltDeg": 40,
+        "azimuthDeg": -38
     },
     "virtualBattery": [
         {

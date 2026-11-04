@@ -40,6 +40,7 @@ fun ResultsScreen(result: AnalysisResult, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(vertical = 12.dp),
         ) {
+            result.meter?.let { m -> item { MeterCard(m) } }
             val scenarios = result.scenarios
             val multi = scenarios.size > 1 || (scenarios.firstOrNull()?.priceResults?.size ?: 0) > 1
 
@@ -60,6 +61,9 @@ fun ResultsScreen(result: AnalysisResult, onBack: () -> Unit) {
                     }
                     item { SummaryCard(pr) }
                     item { EnergyCard(pr.totals) }
+                    if (pr.ev.chargedKwh > 0) {
+                        item { EvCard(pr.ev) }
+                    }
                     item { CostsCard(pr.costs, pr.savings) }
                     item { RoiCard(pr.savings, pr.costs) }
                     if (pr.battery.enabled) {
@@ -263,6 +267,38 @@ private fun BatteryCard(b: BatteryData) {
                 MetricRow("Payback period", "${"%.1f".format(b.paybackYears)} years")
             }
         }
+    }
+}
+
+@Composable
+private fun EvCard(e: EvData) {
+    ResultCard(title = "EV Charging  (Indra, beyond the CT)") {
+        Text("Included in the load and import figures above.", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        MetricRow("Charged", "${"%.1f".format(e.chargedKwh)} kWh")
+        MetricRow("  Off-peak / peak", "${"%.1f".format(e.offPeakKwh)} / ${"%.1f".format(e.peakKwh)} kWh")
+        MetricRow("  From solar", "${"%.1f".format(e.fromSolarKwh)} kWh", valueColor = green)
+        MetricRow("Cost (rates paid)", "£${"%.2f".format(e.importCost + e.lostExport)}")
+        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+        MetricRow("Projected per year", "${"%.0f".format(e.annualKwh)} kWh  £${"%.2f".format(e.annualCost)}")
+        e.basisNote?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun MeterCard(m: MeterComparison) {
+    ResultCard(title = "Export vs Fuse meter") {
+        val diffPct = if (m.meterKwh > 0) 100 * (m.inverterKwh - m.meterKwh) / m.meterKwh else 0.0
+        Text("${m.days} days, ${m.from} to ${m.to}", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        MetricRow("Inverter estimate (corrected)", "${"%.1f".format(m.inverterKwh)} kWh")
+        MetricRow("Fuse smart meter", "${"%.1f".format(m.meterKwh)} kWh")
+        MetricRow("Difference", "${"%+.1f".format(diffPct)}%",
+            valueColor = if (kotlin.math.abs(diffPct) <= 2) green else amber)
     }
 }
 

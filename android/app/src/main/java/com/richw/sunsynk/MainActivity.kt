@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.richw.sunsynk.ui.ConfigScreen
+import com.richw.sunsynk.ui.DataSourcesScreen
 import com.richw.sunsynk.ui.LoginScreen
 import com.richw.sunsynk.ui.MainScreen
 import com.richw.sunsynk.ui.ResultsScreen
@@ -118,6 +119,7 @@ fun App(
                 onEditCredentials = { navController.navigate("login") },
                 onViewResult = { navController.navigate("results") },
                 onEditConfig = { navController.navigate("config") },
+                onDataSources = { navController.navigate("sources") },
                 onExport = {
                     if (!isExporting) {
                         isExporting = true
@@ -133,6 +135,10 @@ fun App(
                     }
                 },
             )
+        }
+        composable("sources") {
+            val sourcesVm: DataSourcesViewModel = viewModel(factory = DataSourcesViewModel.Factory(context))
+            DataSourcesScreen(vm = sourcesVm, onBack = { navController.popBackStack() })
         }
         composable("results") {
             val result = (state as? AnalysisState.Done)?.result

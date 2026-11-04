@@ -26,6 +26,12 @@ class EnergySummary(
     var totalCalcExportOffPeak = 0.0
     var totalCalcImportPeak = 0.0
     var totalCalcExportPeak = 0.0
+    // EV charging beyond the inverter CT (Wh); already included in load/import/export above.
+    var totalEvPeak = 0.0
+    var totalEvOffPeak = 0.0
+    var totalEvFromPv = 0.0
+    var evImportCost = 0.0
+    var evLostExport = 0.0
     var offPeakExcess = 0.0
     var offPeakExcessSavings = 0.0
     var totalSavedCalc = 0.0
@@ -88,6 +94,9 @@ class EnergySummary(
         totalCalcExportPeak += day.getCalcExportPeak()
         totalSavedCalc += day.getCalcLoad() - day.getCalcImport()
         totalSavedSupplied += day.suppliedLoad - day.suppliedImport
+        totalEvPeak += day.getCalcEvPeak()
+        totalEvOffPeak += day.getCalcEvOffPeak()
+        totalEvFromPv += day.evFromPv
     }
 
     fun recalculate() {
@@ -100,8 +109,13 @@ class EnergySummary(
         totalExportAmountSupplied = totalSuppliedExport * priceData.currentExport
         totalSavingsCalc = totalSavedAmountCalc + totalExportAmountCalc
         totalSavingsSupplied = totalSavedAmountSupplied + totalExportAmountSupplied
-        offPeakExcess = (totalCalcImportOffPeak / 1000) - (priceData.offPeakAverage * days)
+        // EV charging is excluded: it's car charging, not house load shifted to off-peak.
+        offPeakExcess = ((totalCalcImportOffPeak - totalEvOffPeak) / 1000) - (priceData.offPeakAverage * days)
         offPeakExcessSavings = offPeakExcess * (priceData.currentPeak - priceData.currentOffPeak)
+        // EV energy: PV that would have been exported costs the lost SEG; the rest is imported.
+        evImportCost = (totalEvPeak - totalEvFromPv) / 1000 * priceData.currentPeak +
+            totalEvOffPeak / 1000 * priceData.currentOffPeak
+        evLostExport = totalEvFromPv / 1000 * priceData.currentExport
         val standing = days * priceData.standingCharge
         totalCost = (
             totalCalcImportPeak / 1000 * priceData.currentPeak
@@ -142,6 +156,11 @@ class EnergySummaryAggregator {
             "total_calc_import_peak" to 0.0,
             "total_calc_export_peak" to 0.0,
             "total_off_peak_excess" to 0.0,
+            "total_ev_peak" to 0.0,
+            "total_ev_off_peak" to 0.0,
+            "total_ev_from_pv" to 0.0,
+            "total_ev_import_cost" to 0.0,
+            "total_ev_lost_export" to 0.0,
             "total_off_peak_excess_savings" to 0.0,
             "days" to 0.0,
             "total_saved_calc" to 0.0,
@@ -179,6 +198,11 @@ class EnergySummaryAggregator {
             t["total_calc_import_peak"] = t["total_calc_import_peak"]!! + s.totalCalcImportPeak / 1000
             t["total_calc_export_peak"] = t["total_calc_export_peak"]!! + s.totalCalcExportPeak / 1000
             t["total_off_peak_excess"] = t["total_off_peak_excess"]!! + s.offPeakExcess
+            t["total_ev_peak"] = t["total_ev_peak"]!! + s.totalEvPeak / 1000
+            t["total_ev_off_peak"] = t["total_ev_off_peak"]!! + s.totalEvOffPeak / 1000
+            t["total_ev_from_pv"] = t["total_ev_from_pv"]!! + s.totalEvFromPv / 1000
+            t["total_ev_import_cost"] = t["total_ev_import_cost"]!! + s.evImportCost
+            t["total_ev_lost_export"] = t["total_ev_lost_export"]!! + s.evLostExport
             t["total_off_peak_excess_savings"] = t["total_off_peak_excess_savings"]!! + s.offPeakExcessSavings
             t["days"] = t["days"]!! + s.days
             t["total_saved_calc"] = t["total_saved_calc"]!! + s.totalSavedCalc / 1000

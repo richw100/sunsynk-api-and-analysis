@@ -13,6 +13,6 @@ data class PriceData(
     var offPeakBaselineKwh: Double = 0.96,
     var currentExport: Double = 0.165,
     var standingCharge: Double = 0.6,
-    var originalPrice: Double = 6206.47,
+    var originalPrice: Double = 6210.0,
     var interestRate: Double = 3.7,
 )

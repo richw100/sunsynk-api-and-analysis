@@ -5,6 +5,12 @@ plugins {
 }
 
 android {
+    testOptions {
+        unitTests.all {
+            it.maxHeapSize = "512m"
+            it.maxParallelForks = 1
+        }
+    }
     namespace = "com.richw.sunsynk"
     compileSdk = 35
 

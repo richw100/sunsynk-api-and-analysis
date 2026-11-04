@@ -46,6 +46,10 @@ class SeasonalProjection {
         for ((key, value) in values) kwh[m][key] = (kwh[m][key] ?: 0.0) + value
     }
 
+    /** {month index 0-11: average kWh/day} for every calendar month seen. */
+    fun monthlyDailyAvg(key: String): Map<Int, Double> =
+        (0 until 12).filter { monthDays[it] > 0 }.associateWith { (kwh[it][key] ?: 0.0) / monthDays[it] }
+
     val days get() = monthDays.sum()
     val monthsCovered get() = monthDays.count { it > 0 }
     val seasonal get() = monthsCovered == 12
@@ -68,3 +72,37 @@ class SeasonalProjection {
         )
     }
 }
+
+val EV_KEYS = listOf("ev_peak", "ev_off_peak", "ev_from_pv")
+
+data class RebasedEv(val kwh: Map<String, Double>, val ratio: Double, val measuredMonths: Int)
+
+/**
+ * A year of EV charging at the level seen since a change in use, e.g. a second car (mirrors
+ * Python projection.rebased_annual_ev). Calendar months seen since the change ([after]) count
+ * as measured; a month seen only before it is scaled by the after/before ratio over the
+ * months both periods share, keeping last year's seasonal shape. The peak/off-peak/solar
+ * split follows the after period. Without after data: the plain seasonal year, ratio 1.
+ */
+fun rebasedAnnualEv(before: SeasonalProjection, after: SeasonalProjection): RebasedEv {
+    fun total(p: SeasonalProjection): Map<Int, Double> {
+        val peak = p.monthlyDailyAvg("ev_peak")
+        val off = p.monthlyDailyAvg("ev_off_peak")
+        return (peak.keys + off.keys).associateWith { (peak[it] ?: 0.0) + (off[it] ?: 0.0) }
+    }
+    val dim = SeasonalProjection.DAYS_IN_MONTH
+    val b = total(before)
+    val a = total(after)
+    if (a.isEmpty()) return RebasedEv(EV_KEYS.associateWith { before.annualKwh(it) }, 1.0, 0)
+    val shared = a.keys.filter { it in b }
+    val bShared = shared.sumOf { b[it]!! * dim[it] }
+    val ratio = if (bShared > 0) shared.sumOf { a[it]!! * dim[it] } / bShared else 1.0
+    var year = (0 until 12).sumOf { m -> (a[m] ?: ((b[m] ?: 0.0) * ratio)) * dim[m] }
+    val seen = a.keys + b.keys
+    if (seen.size < 12) year = year * 365 / seen.sumOf { dim[it] }
+    val split = EV_KEYS.associateWith { k -> after.monthlyDailyAvg(k).entries.sumOf { (m, v) -> v * dim[m] } }
+    val afterTotal = split["ev_peak"]!! + split["ev_off_peak"]!!
+    return RebasedEv(EV_KEYS.associateWith { if (afterTotal > 0) year * split[it]!! / afterTotal else 0.0 },
+        ratio, a.size)
+}
+

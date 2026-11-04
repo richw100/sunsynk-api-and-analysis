@@ -27,6 +27,7 @@ fun MainScreen(
     onEditCredentials: () -> Unit,
     onViewResult: () -> Unit,
     onEditConfig: () -> Unit,
+    onDataSources: () -> Unit = {},
     onExport: () -> Unit = {},
 ) {
     Scaffold(
@@ -74,6 +75,9 @@ fun MainScreen(
                     Text("Install cost: £${"%.2f".format(settings.originalPrice)}", style = MaterialTheme.typography.bodySmall)
                     Text("Off-peak shift: ${settings.offPeakShift}", style = MaterialTheme.typography.bodySmall)
                     Text("Tariff files: ${settings.energyPrices.joinToString()}", style = MaterialTheme.typography.bodySmall)
+                    Text("EV charging: ${settings.evCharging}" +
+                        (if (settings.evBasisFrom.isNotBlank()) ", projected from ${settings.evBasisFrom}" else ""),
+                        style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(4.dp))
                     if (settings.batteryConfigs.size > 1) {
                         Text("Battery configs: ${settings.batteryConfigs.size}", style = MaterialTheme.typography.bodySmall)
@@ -89,6 +93,11 @@ fun MainScreen(
                         }
                     }
                 }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onDataSources, modifier = Modifier.fillMaxWidth()) {
+                Text("Data sources: Fuse meter & Indra EV charger")
             }
 
             Spacer(Modifier.height(16.dp))

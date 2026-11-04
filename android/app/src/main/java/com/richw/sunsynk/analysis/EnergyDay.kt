@@ -47,15 +47,31 @@ data class ExportCorrection(val gain: Double = 1.0, val standbyW: Double = 27.6)
     }
 }
 
+private val HM: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm")
+
+/** (time, W) records of one Sunsynk day series, as sent (not gap-filled). */
+fun parseRecords(data: JsonObject): List<Pair<LocalTime, Double>> =
+    data.getAsJsonArray("records").map { r ->
+        val rec = r.asJsonObject
+        Pair(LocalTime.parse(rec.get("time").asString, HM), rec.get("value").asString.toDouble())
+    }
+
+/** Accumulates peak/off-peak Wh from already gap-filled 5-minute (time, W) records. */
 class IntervalSummary(
-    data: JsonObject,
+    val label: String,
+    records: List<Pair<LocalTime, Double>>,
     battery: VirtualBattery?,
     offPeakStart: String,
     offPeakStop: String,
     private val isLoad: Boolean = false,
     private val correction: ExportCorrection = ExportCorrection(),
 ) {
-    val label: String = data.get("label").asString
+    constructor(
+        data: JsonObject, battery: VirtualBattery?, offPeakStart: String, offPeakStop: String,
+        isLoad: Boolean = false, correction: ExportCorrection = ExportCorrection(),
+    ) : this(data.get("label").asString, fillGaps(parseRecords(data)), battery, offPeakStart, offPeakStop,
+        isLoad, correction)
+
     var peak: Double = 0.0
     var peakExport: Double = 0.0
     var offPeak: Double = 0.0
@@ -65,17 +81,12 @@ class IntervalSummary(
     val parsed: MutableList<Pair<LocalTime, Double>> = if (isLoad) mutableListOf() else mutableListOf()
 
     init {
-        val fmt = DateTimeFormatter.ofPattern("H:mm")
-        val start = LocalTime.parse(offPeakStart, fmt)
-        val stop = LocalTime.parse(offPeakStop, fmt)
+        val start = LocalTime.parse(offPeakStart, HM)
+        val stop = LocalTime.parse(offPeakStop, HM)
         var recharged = false
         var batteryRanOut = false
 
-        val raw = data.getAsJsonArray("records").map { r ->
-            val rec = r.asJsonObject
-            Pair(LocalTime.parse(rec.get("time").asString, fmt), rec.get("value").asString.toDouble())
-        }
-        for ((time, watts) in fillGaps(raw)) {
+        for ((time, watts) in records) {
             val value = watts / 12.0
             if (isLoad) parsed.add(Pair(time, value))
 
@@ -132,10 +143,17 @@ class EnergyDay(
     offPeakStart: String,
     offPeakStop: String,
     private val exportCorrection: ExportCorrection = ExportCorrection(),
+    evWatts: Map<String, Double>? = null,
 ) {
     val pv: IntervalSummary
     val grid: IntervalSummary
     val load: IntervalSummary
+    /** EV charging beyond the CT ({"HH:mm": W}, see EvCharging), already in grid/load. */
+    val ev: IntervalSummary
+    /** Wh of EV charging met by PV the CT counted as export. */
+    var evFromPv = 0.0
+        private set
+    private var batteryGrid: IntervalSummary? = null
     val suppliedLoad: Double
     val suppliedImport: Double
     val suppliedPv: Double
@@ -149,17 +167,38 @@ class EnergyDay(
         startDt = LocalTime.parse(offPeakStart, fmt)
         stopDt = LocalTime.parse(offPeakStop, fmt)
 
+        // EV charging (mirrors Python EnergyDay ev_watts): added to Load and the net Grid meter
+        // after gap-filling, so it soaks up CT-measured export first and the rest is import;
+        // slots Sunsynk didn't sample get a record carrying only the EV draw. The battery
+        // replay keeps the CT-side Grid (a battery there couldn't feed the car).
+        val ev = (evWatts ?: emptyMap()).filterValues { it > 0 }
+            .mapKeys { LocalTime.parse(it.key, HM) }
+        fun addEv(records: List<Pair<LocalTime, Double>>): List<Pair<LocalTime, Double>> {
+            if (ev.isEmpty()) return records
+            val seen = records.map { it.first }.toSet()
+            return (records.map { (t, w) -> Pair(t, w + (ev[t] ?: 0.0)) } +
+                ev.filterKeys { it !in seen }.map { (t, w) -> Pair(t, w) }).sortedBy { it.first }
+        }
+        this.ev = IntervalSummary("EV", ev.entries.sortedBy { it.key }.map { Pair(it.key, it.value) },
+            null, offPeakStart, offPeakStop)
+
         val infos = data.getAsJsonArray("infos")
         var pvTmp: IntervalSummary? = null
         var gridTmp: IntervalSummary? = null
         var loadTmp: IntervalSummary? = null
         for (item in infos) {
             val obj = item.asJsonObject
+            val records = fillGaps(parseRecords(obj))
             when (obj.get("label").asString) {
-                "PV" -> pvTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop)
-                "Grid" -> gridTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop, isLoad = true,
-                    correction = exportCorrection)
-                "Load" -> loadTmp = IntervalSummary(obj, battery, offPeakStart, offPeakStop)
+                "PV" -> pvTmp = IntervalSummary("PV", records, battery, offPeakStart, offPeakStop)
+                "Grid" -> {
+                    evFromPv = records.sumOf { (t, w) -> minOf(ev[t] ?: 0.0, maxOf(0.0, -w)) } / 12.0
+                    gridTmp = IntervalSummary("Grid", addEv(records), if (ev.isEmpty()) battery else null,
+                        offPeakStart, offPeakStop, isLoad = true, correction = exportCorrection)
+                    if (ev.isNotEmpty()) batteryGrid = IntervalSummary("Grid", records, battery,
+                        offPeakStart, offPeakStop, isLoad = true, correction = exportCorrection)
+                }
+                "Load" -> loadTmp = IntervalSummary("Load", addEv(records), battery, offPeakStart, offPeakStop)
             }
         }
         pv = pvTmp ?: IntervalSummary(emptyInfoObj("PV"), null, offPeakStart, offPeakStop)
@@ -175,7 +214,7 @@ class EnergyDay(
     fun runBattery(battery: VirtualBattery) {
         var recharged = false
         var batteryRanOut = false
-        for ((timeDt, wh) in grid.parsed) {
+        for ((timeDt, wh) in (batteryGrid ?: grid).parsed) {
             if (!timeDt.isBefore(startDt) && timeDt.isBefore(stopDt)) {
                 if (!recharged) {
                     battery.recharge()
@@ -202,6 +241,9 @@ class EnergyDay(
     fun getCalcLoad() = load.peak + load.offPeak
     fun getCalcLoadPeak() = load.peak
     fun getCalcLoadOffPeak() = load.offPeak
+    fun getCalcEv() = ev.peak + ev.offPeak
+    fun getCalcEvPeak() = ev.peak
+    fun getCalcEvOffPeak() = ev.offPeak
 }
 
 private fun emptyInfoObj(label: String): JsonObject {

@@ -57,11 +57,34 @@ data class BatteryData(
     val warnings: List<String>,
 )
 
+/** EV charging beyond the inverter CT (Indra), already included in the energy totals. */
+data class EvData(
+    val chargedKwh: Double,
+    val peakKwh: Double,
+    val offPeakKwh: Double,
+    val fromSolarKwh: Double,
+    val importCost: Double,
+    val lostExport: Double,
+    val annualKwh: Double,
+    val annualCost: Double,
+    val basisNote: String?,
+)
+
+/** Inverter-estimated export vs the Fuse smart meter, over the days both have. */
+data class MeterComparison(
+    val days: Int,
+    val from: String,
+    val to: String,
+    val inverterKwh: Double,
+    val meterKwh: Double,
+)
+
 data class PriceResult(
     val label: String,
     val totals: EnergyTotals,
     val costs: CostData,
     val savings: SavingsData,
+    val ev: EvData,
     val battery: BatteryData,
 )
 
@@ -72,4 +95,6 @@ data class BatteryScenario(
 
 data class AnalysisResult(
     val scenarios: List<BatteryScenario>,
+    val meter: MeterComparison? = null,
+    val evDays: Int = 0,
 )

@@ -62,14 +62,19 @@ data class AppSettings(
     val startDate: String = "",
     val stopDate: String = "",
     val scanFromYear: Int = 2025,
-    val originalPrice: Double = 6206.47,
+    val originalPrice: Double = 6210.0,
     val offPeakShift: String = "ON",
     val offPeakBaseline: Double = 0.96,
     val batteryConfigs: List<BatteryConfig> = listOf(BatteryConfig()),
     val exportCorrection: ExportCorrectionConfig = ExportCorrectionConfig(),
+    /** Add the Indra EV charger (beyond the inverter CT) to load/import, when downloaded. */
+    val evCharging: String = "ON",
+    /** Project EV charging at the level since this date (e.g. a second car); "" = seasonal. */
+    val evBasisFrom: String = "",
 )
 
 fun AppSettings.isOffPeakShiftOn() = offPeakShift.equals("ON", ignoreCase = true)
+fun AppSettings.isEvChargingOn() = evCharging.equals("ON", ignoreCase = true)
 
 fun BatteryConfig.isEnabled() = enabled.equals("ON", ignoreCase = true)
 fun BatteryConfig.isPvEnabled() = usePV.equals("ON", ignoreCase = true)
@@ -117,11 +122,13 @@ fun loadSettingsFromJson(json: JsonObject): AppSettings {
         startDate = json.get("startDate")?.asString ?: "",
         stopDate = json.get("stopDate")?.asString ?: "",
         scanFromYear = json.get("scanFromYear")?.asInt ?: 2025,
-        originalPrice = json.get("originalPrice")?.asDouble ?: 6206.47,
+        originalPrice = json.get("originalPrice")?.asDouble ?: 6210.0,
         offPeakShift = json.get("offPeakShift")?.asString ?: "ON",
         offPeakBaseline = json.get("offPeakBaseline")?.asDouble ?: 0.96,
         batteryConfigs = batteryConfigs,
         exportCorrection = parseExportCorrection(json.getAsJsonObject("exportCorrection")),
+        evCharging = json.get("evCharging")?.asString ?: "ON",
+        evBasisFrom = json.get("evBasisFrom")?.asString ?: "",
     )
 }
 
@@ -182,6 +189,8 @@ fun settingsToJson(settings: AppSettings): JsonObject {
     obj.addProperty("offPeakShift", settings.offPeakShift)
     obj.addProperty("offPeakBaseline", settings.offPeakBaseline)
     obj.add("exportCorrection", exportCorrectionToJson(settings.exportCorrection))
+    obj.addProperty("evCharging", settings.evCharging)
+    obj.addProperty("evBasisFrom", settings.evBasisFrom)
     val vb = settings.batteryConfigs
     if (vb.size == 1) {
         obj.add("virtualBattery", batteryConfigToJson(vb[0]))
@@ -224,6 +233,13 @@ class ConfigStore(private val context: Context) {
             val json = JsonParser.parseString(configFile.readText()).asJsonObject
             // Configs saved before exportCorrection existed: adopt the bundled calibration.
             if (!json.has("exportCorrection")) bundledExportCorrection()?.let { json.add("exportCorrection", it) }
+            // Configs saved before EV charging was modelled: adopt the bundled EV settings, and
+            // drop the old -£3.53 "solar used to charge the car" install-cost adjustment, which
+            // the EV model now counts directly.
+            if (!json.has("evCharging")) bundled()?.let { b ->
+                for (key in listOf("evCharging", "evBasisFrom")) b.get(key)?.let { json.add(key, it) }
+                if (json.get("originalPrice")?.asDouble == 6206.47) b.get("originalPrice")?.let { json.add("originalPrice", it) }
+            }
             loadSettingsFromJson(json)
         } catch (e: Exception) {
             AppSettings()
@@ -240,13 +256,13 @@ class ConfigStore(private val context: Context) {
             ?.filter { it.startsWith("_EnergyPrices") && it.endsWith(".json") }
             ?.sorted() ?: emptyList()
 
-    private fun bundledExportCorrection(): JsonObject? = try {
-        context.assets.open("config.json").bufferedReader().use {
-            JsonParser.parseReader(it).asJsonObject.getAsJsonObject("exportCorrection")
-        }
+    private fun bundled(): JsonObject? = try {
+        context.assets.open("config.json").bufferedReader().use { JsonParser.parseReader(it).asJsonObject }
     } catch (e: Exception) {
         null
     }
+
+    private fun bundledExportCorrection(): JsonObject? = bundled()?.getAsJsonObject("exportCorrection")
 
     private fun copyFromAssets() {
         context.assets.open("config.json").use { input ->
@@ -398,4 +414,64 @@ class CredentialStore(context: Context) {
         set(v) = prefs.edit().putString("password", v).apply()
 
     fun hasCredentials() = username.isNotBlank() && password.isNotBlank()
+}
+
+/**
+ * Sign-in state for the Fuse (export meter) and Indra (EV charger) downloads, encrypted like
+ * the Sunsynk credentials. Their data caches live in the app's private storage
+ * ([fuseDir]/[indraDir]), not the shareable external folder: Indra's data includes the
+ * home address.
+ */
+class DataSourceStore(private val context: Context) {
+    private val prefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+        EncryptedSharedPreferences.create(
+            context, "data_sources", masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    } catch (e: Exception) {
+        context.getSharedPreferences("data_sources_fallback", Context.MODE_PRIVATE)
+    }
+
+    val fuseDir get() = File(context.filesDir, "fuseenergydata")
+    val indraDir get() = File(context.filesDir, "indraData")
+
+    var fusePhone: String
+        get() = prefs.getString("fuse_phone", "") ?: ""
+        set(v) = prefs.edit().putString("fuse_phone", v).apply()
+
+    var fusePremises: String
+        get() = prefs.getString("fuse_premises", "") ?: ""
+        set(v) = prefs.edit().putString("fuse_premises", v).apply()
+
+    /** Fuse session cookies. A session saved by the desktop downloader (fuseenergydata/
+     *  .session.json, {name: value}) can be copied into [fuseDir] via adb; it is adopted on
+     *  first read, moved into the encrypted store, and the plain file deleted. */
+    var fuseCookies: Map<String, String>
+        get() {
+            val imported = File(fuseDir, ".session.json")
+            if (imported.exists()) {
+                runCatching {
+                    JsonParser.parseString(imported.readText()).asJsonObject.entrySet()
+                        .associate { it.key to it.value.asString }
+                }.getOrNull()?.takeIf { "app-auth" in it }?.let { fuseCookies = it }
+                imported.delete()
+            }
+            return (prefs.getString("fuse_cookies", null) ?: "{}").let { raw ->
+                JsonParser.parseString(raw).asJsonObject.entrySet().associate { it.key to it.value.asString }
+            }
+        }
+        set(v) = prefs.edit().putString("fuse_cookies", Gson().toJson(v)).apply()
+
+    var indraSession: com.richw.sunsynk.api.IndraSession
+        get() = com.richw.sunsynk.api.IndraSession(
+            email = prefs.getString("indra_email", "") ?: "",
+            deviceKey = prefs.getString("indra_device_key", "") ?: "",
+            checkHash = prefs.getString("indra_check_hash", "") ?: "",
+            token = prefs.getString("indra_token", "") ?: "",
+        )
+        set(v) = prefs.edit()
+            .putString("indra_email", v.email).putString("indra_device_key", v.deviceKey)
+            .putString("indra_check_hash", v.checkHash).putString("indra_token", v.token).apply()
 }

@@ -47,12 +47,14 @@ fun batteryWarnings(battery: VirtualBattery, pd: PriceData): List<String> {
 class EnergyPrices(
     private val pricesJson: JsonObject,
     val origBattery: VirtualBattery,
-    val originalPrice: Double = 6206.47,
+    val originalPrice: Double = 6210.0,
     val label: String = "",
     private val offPeakBaselineKwh: Double = 0.96,
     val offPeakShiftEnabled: Boolean = true,
     val batteryEnabled: Boolean = true,
     val batteryPrice: Double = 0.0,
+    /** EV use changed on this date (e.g. a second car): project EV from that level. */
+    val evBasisFrom: String = "",
 ) {
     val aggregator = EnergySummaryAggregator()
     var priceData = PriceData()
@@ -63,6 +65,8 @@ class EnergyPrices(
     val projection = SeasonalProjection()
     private var currentDate: String? = null
     private var batterySeen = DoubleArray(4)
+    private val evBefore = SeasonalProjection()
+    private val evAfter = SeasonalProjection()
 
     init {
         priceData.offPeakBaselineKwh = offPeakBaselineKwh
@@ -131,7 +135,13 @@ class EnergyPrices(
     fun addData(day: EnergyDay) {
         changed = true
         aggregator.updateLastSummary(day)
-        currentDate?.let { projection.addDay(it, projectionKwh(day)) }
+        currentDate?.let { date ->
+            val kwh = projectionKwh(day)
+            projection.addDay(date, kwh)
+            if (evBasisFrom.isNotEmpty()) {
+                (if (date >= evBasisFrom) evAfter else evBefore).addDay(date, kwh.filterKeys { it in EV_KEYS })
+            }
+        }
     }
 
     /** This day's kWh for the projection; battery figures are the change in the
@@ -148,11 +158,22 @@ class EnergyPrices(
             "import_off_peak" to day.getCalcImportOffPeak() / 1000,
             "export" to day.getCalcExport() / 1000,
             "pv" to day.getCalcPv() / 1000,
+            "ev_peak" to day.getCalcEvPeak() / 1000,
+            "ev_off_peak" to day.getCalcEvOffPeak() / 1000,
+            "ev_from_pv" to day.evFromPv / 1000,
             "batt_grid_charge" to delta[0],
             "batt_drawn" to delta[1],
             "batt_exported" to delta[2],
             "batt_pv_diverted" to delta[3],
         )
+    }
+
+    /** How the EV year was rebased on evBasisFrom, or null when it wasn't. */
+    fun evBasisNote(d: Map<String, Any?> = getDerived()): String? {
+        val months = d["ev_basis_months"] as Int
+        if (evBasisFrom.isEmpty() || months == 0) return null
+        return "at the level since $evBasisFrom: $months calendar months measured, the rest = earlier " +
+            "same months × ${"%.2f".format(d["ev_basis_ratio"])}; peak/off-peak split as since then"
     }
 
     /** One-line description of how the annual figures were derived. */
@@ -204,6 +225,15 @@ class EnergyPrices(
             (maxOf(0.0, originalPrice - t["total_savings_calc"]!!) / annualisedSolar).round2()
         } else null
 
+        // EV year: seasonal, or rebased on the level since evBasisFrom. Import is then the
+        // seasonal house-only import plus that EV year's grid share.
+        val seasonalEv = EV_KEYS.associateWith { projection.annualKwh(it) }
+        val rebased = if (evBasisFrom.isNotEmpty()) rebasedAnnualEv(evBefore, evAfter) else null
+        val ev = rebased?.kwh ?: seasonalEv
+        val importPeak = projection.annualKwh("import_peak") -
+            (seasonalEv["ev_peak"]!! - seasonalEv["ev_from_pv"]!!) + (ev["ev_peak"]!! - ev["ev_from_pv"]!!)
+        val importOffPeak = projection.annualKwh("import_off_peak") - seasonalEv["ev_off_peak"]!! + ev["ev_off_peak"]!!
+
         return mapOf(
             "t" to t,
             "seg" to seg,
@@ -223,11 +253,16 @@ class EnergyPrices(
             "annualised_solar_export" to annual.export.round2(),
             "solar_payback_years" to solarPaybackYears,
             "solar_payback_remaining_years" to solarPaybackRemainingYears,
-            "annual_import_peak_kwh" to (projection.annualKwh("import_peak") * 10).roundToLong() / 10.0,
-            "annual_import_off_peak_kwh" to (projection.annualKwh("import_off_peak") * 10).roundToLong() / 10.0,
-            "annual_import_peak_cost" to (projection.annualKwh("import_peak") * rates.peak).round2(),
-            "annual_import_off_peak_cost" to (projection.annualKwh("import_off_peak") * rates.offPeak).round2(),
+            "annual_import_peak_kwh" to (importPeak * 10).roundToLong() / 10.0,
+            "annual_import_off_peak_kwh" to (importOffPeak * 10).roundToLong() / 10.0,
+            "annual_import_peak_cost" to (importPeak * rates.peak).round2(),
+            "annual_import_off_peak_cost" to (importOffPeak * rates.offPeak).round2(),
             "annual_standing_charge" to (365 * rates.standing).round2(),
+            "annual_ev_kwh" to ((ev["ev_peak"]!! + ev["ev_off_peak"]!!) * 10).roundToLong() / 10.0,
+            "annual_ev_cost" to ((ev["ev_peak"]!! - ev["ev_from_pv"]!!) * rates.peak +
+                ev["ev_off_peak"]!! * rates.offPeak + ev["ev_from_pv"]!! * rates.export).round2(),
+            "ev_basis_ratio" to rebased?.ratio,
+            "ev_basis_months" to (rebased?.measuredMonths ?: 0),
             "projection_seasonal" to projection.seasonal,
             "projection_months" to projection.monthsCovered,
         )
@@ -270,6 +305,20 @@ class EnergyPrices(
             sb.appendLine("  Off-peak:  ${"%7.1f".format(off)}kWh   £${"%.2f".format(offCost)}")
             sb.appendLine("  Total:     ${"%7.1f".format(peak + off)}kWh   £${"%.2f".format(peakCost + offCost)}" +
                 "  + standing charge £${"%.2f".format(standing)} = £${"%.2f".format(peakCost + offCost + standing)}/year")
+        }
+
+        val evPeak = t["total_ev_peak"]!!
+        val evOff = t["total_ev_off_peak"]!!
+        if (evPeak + evOff > 0) {
+            sb.appendLine()
+            sb.appendLine("EV CHARGING  (Indra charger, beyond the inverter CT; included in load/import above)")
+            sb.appendLine("  Charged:   ${"%.1f".format(evPeak + evOff)}kWh   Peak: ${"%.1f".format(evPeak)}kWh" +
+                "   Off-peak: ${"%.1f".format(evOff)}kWh   From solar: ${"%.1f".format(t["total_ev_from_pv"])}kWh")
+            sb.appendLine("  Cost:      £${"%.2f".format(t["total_ev_import_cost"])} import" +
+                " + £${"%.2f".format(t["total_ev_lost_export"])} foregone export (at the rates paid)")
+            sb.appendLine("  Projected: ${"%.0f".format(d["annual_ev_kwh"])}kWh/year = " +
+                "£${"%.2f".format(d["annual_ev_cost"])}/year  (${projectionNote()})")
+            evBasisNote(d)?.let { sb.appendLine("             $it") }
         }
 
         sb.appendLine()

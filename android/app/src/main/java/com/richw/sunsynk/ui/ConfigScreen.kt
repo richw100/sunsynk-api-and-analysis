@@ -134,6 +134,26 @@ fun ConfigScreen(
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     DateField(
+                        label = "EV projected from (2nd car)",
+                        value = settings.evBasisFrom,
+                        modifier = Modifier.weight(1f),
+                        onChange = { settings = settings.copy(evBasisFrom = it) },
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("EV charging", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Switch(
+                            checked = settings.evCharging.equals("ON", ignoreCase = true),
+                            onCheckedChange = { settings = settings.copy(evCharging = if (it) "ON" else "OFF") },
+                        )
+                    }
+                }
+            }
+
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    DateField(
                         label = "Start date",
                         value = settings.startDate,
                         modifier = Modifier.weight(1f),
