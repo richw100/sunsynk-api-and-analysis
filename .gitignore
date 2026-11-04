@@ -11,3 +11,4 @@ fuseenergydata/
 *.dmp
 weatherData/
 config.local.json
+indraData/
