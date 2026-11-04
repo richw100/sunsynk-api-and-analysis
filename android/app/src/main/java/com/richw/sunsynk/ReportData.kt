@@ -8,6 +8,10 @@ data class EnergyTotals(
     val calcImportPeakKwh: Double, val calcImportOffPeakKwh: Double,
     val calcPvKwh: Double, val suppliedPvKwh: Double,
     val calcLoadKwh: Double, val suppliedLoadKwh: Double,
+    // Seasonally weighted year at the latest rates (see analysis/Projection.kt)
+    val annualImportPeakKwh: Double, val annualImportOffPeakKwh: Double,
+    val annualImportPeakCost: Double, val annualImportOffPeakCost: Double,
+    val annualStandingCharge: Double,
 )
 
 data class CostData(

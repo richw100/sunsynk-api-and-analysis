@@ -20,7 +20,7 @@ class ProjectionTest {
 
     @Test
     fun latestRatesPicksNewestStartedPeriod() {
-        assertEquals(ProjectionRates(0.25, 0.04, 0.13, "2026-01-01"), latestRates(prices, "2026-10-18"))
+        assertEquals(ProjectionRates(0.25, 0.04, 0.13, 0.57, "2026-01-01"), latestRates(prices, "2026-10-18"))
         assertEquals(0.165, latestRates(prices, "2025-06-01").export, 1e-9)
         assertEquals("2026-01-01", latestRates(prices, "2020-01-01").dateFrom)
     }
@@ -54,7 +54,7 @@ class ProjectionTest {
                 "export" to 4.0, "batt_drawn" to 2.0, "batt_grid_charge" to 1.0,
                 "batt_pv_diverted" to 1.0, "batt_exported" to 0.5))
         }
-        val m = p.annualMoney(ProjectionRates(0.25, 0.04, 0.13, ""))
+        val m = p.annualMoney(ProjectionRates(0.25, 0.04, 0.13, 0.0, ""))
         assertEquals(365 * 5.0 * 0.25, m.selfConsumption, 1e-6)
         assertEquals(365 * 4.0 * 0.13, m.export, 1e-6)
         assertEquals(365 * (2.0 * 0.25 + 0.5 * 0.13 - 1.0 * 0.04 - 1.0 * 0.13), m.battery, 1e-6)

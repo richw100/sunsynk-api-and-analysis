@@ -3,6 +3,7 @@ package com.richw.sunsynk.analysis
 import com.google.gson.JsonObject
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToLong
 
 fun batteryWarnings(battery: VirtualBattery, pd: PriceData): List<String> {
     val warnings = mutableListOf<String>()
@@ -222,6 +223,11 @@ class EnergyPrices(
             "annualised_solar_export" to annual.export.round2(),
             "solar_payback_years" to solarPaybackYears,
             "solar_payback_remaining_years" to solarPaybackRemainingYears,
+            "annual_import_peak_kwh" to (projection.annualKwh("import_peak") * 10).roundToLong() / 10.0,
+            "annual_import_off_peak_kwh" to (projection.annualKwh("import_off_peak") * 10).roundToLong() / 10.0,
+            "annual_import_peak_cost" to (projection.annualKwh("import_peak") * rates.peak).round2(),
+            "annual_import_off_peak_cost" to (projection.annualKwh("import_off_peak") * rates.offPeak).round2(),
+            "annual_standing_charge" to (365 * rates.standing).round2(),
             "projection_seasonal" to projection.seasonal,
             "projection_months" to projection.monthsCovered,
         )
@@ -252,6 +258,18 @@ class EnergyPrices(
                 "    Peak: ${"%.2f".format(t["total_calc_export_peak"]!! / days)}kWh   Off-peak: ${"%.2f".format(t["total_calc_export_off_peak"]!! / days)}kWh")
             sb.appendLine("  Import: ${"%.2f".format(t["total_calc_import"]!! / days)}kWh | ${"%.2f".format(t["total_supplied_import"]!! / days)}kWh" +
                 "    Peak: ${"%.2f".format(t["total_calc_import_peak"]!! / days)}kWh   Off-peak: ${"%.2f".format(t["total_calc_import_off_peak"]!! / days)}kWh")
+
+            val peak = d["annual_import_peak_kwh"] as Double
+            val off = d["annual_import_off_peak_kwh"] as Double
+            val peakCost = d["annual_import_peak_cost"] as Double
+            val offCost = d["annual_import_off_peak_cost"] as Double
+            val standing = d["annual_standing_charge"] as Double
+            sb.appendLine()
+            sb.appendLine("PROJECTED YEARLY IMPORT  (${projectionNote()})")
+            sb.appendLine("  Peak:      ${"%7.1f".format(peak)}kWh   £${"%.2f".format(peakCost)}")
+            sb.appendLine("  Off-peak:  ${"%7.1f".format(off)}kWh   £${"%.2f".format(offCost)}")
+            sb.appendLine("  Total:     ${"%7.1f".format(peak + off)}kWh   £${"%.2f".format(peakCost + offCost)}" +
+                "  + standing charge £${"%.2f".format(standing)} = £${"%.2f".format(peakCost + offCost + standing)}/year")
         }
 
         sb.appendLine()

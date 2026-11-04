@@ -165,6 +165,15 @@ private fun EnergyCard(t: EnergyTotals) {
                 SmallMetric("Import/day", perDay(t.calcImportKwh), Modifier.weight(1f))
                 SmallMetric("PV/day", perDay(t.calcPvKwh), Modifier.weight(1f))
             }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+            val energyCost = t.annualImportPeakCost + t.annualImportOffPeakCost
+            EnergyRow("Import per year (projected)",
+                calc = "${"%.0f".format(t.annualImportPeakKwh + t.annualImportOffPeakKwh)} kWh",
+                reported = "£${"%.2f".format(energyCost)}",
+                detail = "Peak ${"%.0f".format(t.annualImportPeakKwh)} kWh £${"%.2f".format(t.annualImportPeakCost)}" +
+                    "  Off-pk ${"%.0f".format(t.annualImportOffPeakKwh)} kWh £${"%.2f".format(t.annualImportOffPeakCost)}" +
+                    "  + standing £${"%.2f".format(t.annualStandingCharge)}",
+            )
         }
     }
 }

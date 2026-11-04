@@ -18,7 +18,7 @@ PRICES = {'data': {'prices': [
 
 def test_latest_rates_picks_newest_started_period():
     assert latest_rates(PRICES, '2026-10-18') == {
-        'peak': 0.25, 'off_peak': 0.04, 'export': 0.13, 'datefrom': '2026-01-01'}
+        'peak': 0.25, 'off_peak': 0.04, 'export': 0.13, 'standing': 0.57, 'datefrom': '2026-01-01'}
     assert latest_rates(PRICES, '2025-06-01')['export'] == 0.165
 
 
@@ -85,6 +85,10 @@ def test_energy_prices_projection_reprices_old_days_at_latest_rates():
     assert d['annualised_solar'] == pytest.approx(365 * (4.0 * 0.25 + 3.0 * 0.13), abs=0.01)
     assert d['solar_payback_years'] == pytest.approx(round(1000.0 / d['annualised_solar'], 1))
     assert d['solar_payback_remaining_years'] < d['solar_payback_years']
+    assert d['annual_import_peak_kwh'] == pytest.approx(365 * 2.0)
+    assert d['annual_import_off_peak_kwh'] == 0.0
+    assert d['annual_import_peak_cost'] == pytest.approx(365 * 2.0 * 0.25, abs=0.01)
+    assert d['annual_standing_charge'] == pytest.approx(365 * 0.57, abs=0.01)
 
 
 def test_energy_prices_projection_tracks_battery_deltas_across_tariff_switch():

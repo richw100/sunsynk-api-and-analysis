@@ -215,6 +215,12 @@ class EnergyPrices:
             "annualised_solar_export": round(annual['export'], 2),
             "solar_payback_years": solar_payback_years,
             "solar_payback_remaining_years": solar_payback_remaining_years,
+            "annual_import_peak_kwh": round(self.projection.annual_kwh('import_peak'), 1),
+            "annual_import_off_peak_kwh": round(self.projection.annual_kwh('import_off_peak'), 1),
+            "annual_import_peak_cost": round(self.projection.annual_kwh('import_peak') * rates['peak'], 2),
+            "annual_import_off_peak_cost": round(
+                self.projection.annual_kwh('import_off_peak') * rates['off_peak'], 2),
+            "annual_standing_charge": round(365 * rates['standing'], 2),
             "projection_rates": rates,
             "projection_seasonal": self.projection.seasonal,
             "projection_months": self.projection.months_covered,
@@ -298,6 +304,19 @@ class EnergyPrices:
                   f"    Peak: {round(t['total_calc_export_peak']/days, 2)}kWh   Off-peak: {round(t['total_calc_export_off_peak']/days, 2)}kWh")
             print(f"  Import: {round(t['total_calc_import']/days, 2)}kWh | {round(t['total_supplied_import']/days, 2)}kWh"
                   f"    Peak: {round(t['total_calc_import_peak']/days, 2)}kWh   Off-peak: {round(t['total_calc_import_off_peak']/days, 2)}kWh")
+            self.print_projected_import()
+
+    def print_projected_import(self):
+        d = self.get_derived()
+        peak, off = d['annual_import_peak_kwh'], d['annual_import_off_peak_kwh']
+        energy = d['annual_import_peak_cost'] + d['annual_import_off_peak_cost']
+        print("")
+        print(f"PROJECTED YEARLY IMPORT  ({self.projection_note()})")
+        print(f"  Peak:      {peak:7.1f}kWh   £{d['annual_import_peak_cost']:.2f}")
+        print(f"  Off-peak:  {off:7.1f}kWh   £{d['annual_import_off_peak_cost']:.2f}")
+        print(f"  Total:     {peak + off:7.1f}kWh   £{energy:.2f}"
+              f"  + standing charge £{d['annual_standing_charge']:.2f}"
+              f" = £{energy + d['annual_standing_charge']:.2f}/year")
 
     def print_totals(self):
         if not self.off_peak_shift_enabled:

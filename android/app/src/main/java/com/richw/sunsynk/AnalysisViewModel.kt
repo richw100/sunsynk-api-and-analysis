@@ -237,6 +237,11 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                 suppliedPvKwh = t["total_supplied_pv"]!!,
                 calcLoadKwh = t["total_calc_load"]!!,
                 suppliedLoadKwh = t["total_supplied_load"]!!,
+                annualImportPeakKwh = d["annual_import_peak_kwh"] as Double,
+                annualImportOffPeakKwh = d["annual_import_off_peak_kwh"] as Double,
+                annualImportPeakCost = d["annual_import_peak_cost"] as Double,
+                annualImportOffPeakCost = d["annual_import_off_peak_cost"] as Double,
+                annualStandingCharge = d["annual_standing_charge"] as Double,
             ),
             costs = CostData(
                 totalCost = t["total_cost"]!!,

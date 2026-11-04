@@ -32,6 +32,7 @@ def latest_rates(prices: dict, today: str | None = None) -> dict:
         'peak': float(item['peakRate']),
         'off_peak': float(item['offpeakRate']),
         'export': float(item['exportRate']),
+        'standing': float(item.get('standingCharge', 0.0)),
         'datefrom': item['datefrom'],
     }
 

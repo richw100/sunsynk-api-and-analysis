@@ -10,7 +10,9 @@ import java.time.LocalDate
  * cover nor a month recorded twice skews the year. Until all 12 months have been seen it
  * falls back to the plain ×365/days average ([seasonal] is false: provisional).
  */
-data class ProjectionRates(val peak: Double, val offPeak: Double, val export: Double, val dateFrom: String)
+data class ProjectionRates(
+    val peak: Double, val offPeak: Double, val export: Double, val standing: Double, val dateFrom: String,
+)
 
 data class AnnualMoney(val selfConsumption: Double, val export: Double, val battery: Double) {
     val solar get() = selfConsumption + export
@@ -25,6 +27,7 @@ fun latestRates(pricesJson: JsonObject, today: String = LocalDate.now().toString
         peak = item.get("peakRate").asDouble,
         offPeak = item.get("offpeakRate").asDouble,
         export = item.get("exportRate").asDouble,
+        standing = item.get("standingCharge")?.asDouble ?: 0.0,
         dateFrom = item.get("datefrom").asString,
     )
 }
