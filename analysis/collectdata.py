@@ -147,7 +147,7 @@ def _load_settings(argv):
         'startDate': '',
         'stopDate': '',
         'scanFromYear': 2025,
-        'originalPrice': 6206.47,
+        'originalPrice': 6210,
         'existingPvWatts': 3115,
         'offPeakShift': 'ON',
         'offPeakBaseline': 0.96,
