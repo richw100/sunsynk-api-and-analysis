@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.material.icons.filled.ElectricCar
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -123,12 +124,17 @@ fun App(
         composable("main") {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             val tariffsVm: TariffsViewModel = viewModel(factory = TariffsViewModel.Factory(context))
+            val evVm: EvSavingsViewModel = viewModel(factory = EvSavingsViewModel.Factory(context))
+            // A finished analysis run saves new charging days: pick them up for the EV tab.
+            LaunchedEffect(state) { if (state is AnalysisState.Done) evVm.onShown() }
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
                     if (tab == 1) {
                         TariffsScreen(tariffsVm, onCompare = { tab = 2 })
                     } else if (tab == 2) {
                         com.richw.sunsynk.ui.CompareScreen(tariffsVm)
+                    } else if (tab == 3) {
+                        com.richw.sunsynk.ui.EvSavingsScreen(evVm)
                     } else {
                         MainScreen(
                             settings = settings,
@@ -170,6 +176,9 @@ fun App(
                         enabled = tariffsState.compare.size == 2,
                         icon = { Icon(Icons.Default.ViewColumn, contentDescription = null) },
                         label = { Text("Compare") })
+                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                        icon = { Icon(Icons.Default.ElectricCar, contentDescription = null) },
+                        label = { Text("EV") })
                 }
             }
         }

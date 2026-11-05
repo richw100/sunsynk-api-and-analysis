@@ -71,6 +71,8 @@ data class AppSettings(
     val evCharging: String = "ON",
     /** Project EV charging at the level since this date (e.g. a second car); "" = seasonal. */
     val evBasisFrom: String = "",
+    /** The EV tab's petrol comparison: car figures and charging the charger never saw. */
+    val evSavings: com.richw.sunsynk.analysis.EvSavingsConfig = com.richw.sunsynk.analysis.EvSavingsConfig(),
 )
 
 fun AppSettings.isOffPeakShiftOn() = offPeakShift.equals("ON", ignoreCase = true)
@@ -129,7 +131,32 @@ fun loadSettingsFromJson(json: JsonObject): AppSettings {
         exportCorrection = parseExportCorrection(json.getAsJsonObject("exportCorrection")),
         evCharging = json.get("evCharging")?.asString ?: "ON",
         evBasisFrom = json.get("evBasisFrom")?.asString ?: "",
+        evSavings = parseEvSavings(json.getAsJsonObject("evSavings")),
     )
+}
+
+fun parseEvSavings(obj: JsonObject?): com.richw.sunsynk.analysis.EvSavingsConfig {
+    val d = com.richw.sunsynk.analysis.EvSavingsConfig()
+    if (obj == null) return d
+    return com.richw.sunsynk.analysis.EvSavingsConfig(
+        mpg = obj.get("mpg")?.asDouble ?: d.mpg,
+        milesPerKwh = obj.get("milesPerKwh")?.asDouble ?: d.milesPerKwh,
+        chargeEfficiency = obj.get("chargeEfficiency")?.asDouble ?: d.chargeEfficiency,
+        beforeCharger = obj.getAsJsonArray("beforeCharger")?.map {
+            val o = it.asJsonObject
+            com.richw.sunsynk.analysis.ExtraCharge(o.get("month").asString, o.get("kwh").asDouble, o.get("rate").asDouble)
+        } ?: d.beforeCharger,
+    )
+}
+
+fun evSavingsToJson(c: com.richw.sunsynk.analysis.EvSavingsConfig) = JsonObject().apply {
+    addProperty("mpg", c.mpg)
+    addProperty("milesPerKwh", c.milesPerKwh)
+    addProperty("chargeEfficiency", c.chargeEfficiency)
+    add("beforeCharger", JsonArray().apply {
+        c.beforeCharger.forEach { e -> add(JsonObject().apply {
+            addProperty("month", e.month); addProperty("kwh", e.kwh); addProperty("rate", e.rate) }) }
+    })
 }
 
 fun parseExportCorrection(obj: JsonObject?): ExportCorrectionConfig {
@@ -191,6 +218,7 @@ fun settingsToJson(settings: AppSettings): JsonObject {
     obj.add("exportCorrection", exportCorrectionToJson(settings.exportCorrection))
     obj.addProperty("evCharging", settings.evCharging)
     obj.addProperty("evBasisFrom", settings.evBasisFrom)
+    obj.add("evSavings", evSavingsToJson(settings.evSavings))
     val vb = settings.batteryConfigs
     if (vb.size == 1) {
         obj.add("virtualBattery", batteryConfigToJson(vb[0]))
@@ -240,6 +268,8 @@ class ConfigStore(private val context: Context) {
                 for (key in listOf("evCharging", "evBasisFrom")) b.get(key)?.let { json.add(key, it) }
                 if (json.get("originalPrice")?.asDouble == 6206.47) b.get("originalPrice")?.let { json.add("originalPrice", it) }
             }
+            // Configs saved before the EV tab existed: adopt the bundled petrol comparison settings.
+            if (!json.has("evSavings")) bundled()?.get("evSavings")?.let { json.add("evSavings", it) }
             loadSettingsFromJson(json)
         } catch (e: Exception) {
             AppSettings()
@@ -393,6 +423,13 @@ class PrefsStore(context: Context) {
     var tariffRegion: String
         get() = prefs.getString("tariff_region", "") ?: ""
         set(v) { prefs.edit().putString("tariff_region", v).apply() }
+    /** The EV tab's supermarket petrol stations (found from a postcode, which isn't stored). */
+    var fuelStations: List<com.richw.sunsynk.api.FuelStation>
+        get() = runCatching {
+            com.google.gson.Gson().fromJson(prefs.getString("fuel_stations", "[]"),
+                Array<com.richw.sunsynk.api.FuelStation>::class.java).toList()
+        }.getOrDefault(emptyList())
+        set(v) { prefs.edit().putString("fuel_stations", com.google.gson.Gson().toJson(v)).apply() }
 }
 
 /** The latest analysis run's half-hourly year (TariffProfile), kept in private app storage. */
