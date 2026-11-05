@@ -13,9 +13,13 @@ data class EvSavingsConfig(
     val chargeEfficiency: Double = 0.9,     // AC charging: kWh into the battery per kWh at the charger
     /** Charging the charger never saw (e.g. before it was fitted), from bills: one entry per month. */
     val beforeCharger: List<ExtraCharge> = emptyList(),
+    /** One-off EV credits (e.g. a supplier's free-miles bonus), taken off that month's charging cost. */
+    val credits: List<EvCredit> = emptyList(),
 )
 
 data class ExtraCharge(val month: String, val kwh: Double, val rate: Double)   // rate p/kWh inc VAT
+
+data class EvCredit(val month: String, val amount: Double, val note: String = "")   // £ inc VAT
 
 /** One day of home charging: kWh at the charger and what it cost (£, incl. export given up). */
 data class EvDay(val date: String, val kwh: Double, val cost: Double)
@@ -23,8 +27,10 @@ data class EvDay(val date: String, val kwh: Double, val cost: Double)
 data class EvMonth(
     val month: String, val kwh: Double, val miles: Double, val evCost: Double,
     val litres: Double, val petrolCost: Double, val localDays: Int, val days: Int,
+    val credit: Double = 0.0,        // one-off credits this month, £ (already taken off netCost)
 ) {
-    val saved get() = petrolCost - evCost
+    val netCost get() = evCost - credit
+    val saved get() = petrolCost - netCost
     val pencePerLitre get() = if (litres > 0) petrolCost * 100 / litres else 0.0
 }
 
@@ -37,7 +43,8 @@ data class EvSavingsResult(
     val latest: PetrolPrice?,
 ) {
     private fun sum(ms: List<EvMonth>) = EvMonth("", ms.sumOf { it.kwh }, ms.sumOf { it.miles }, ms.sumOf { it.evCost },
-        ms.sumOf { it.litres }, ms.sumOf { it.petrolCost }, ms.sumOf { it.localDays }, ms.sumOf { it.days })
+        ms.sumOf { it.litres }, ms.sumOf { it.petrolCost }, ms.sumOf { it.localDays }, ms.sumOf { it.days },
+        ms.sumOf { it.credit })
     val total get() = sum(months)
     /** The last 12 complete months before [today]'s month. */
     fun last12(today: LocalDate = LocalDate.now()): EvMonth {
@@ -182,9 +189,13 @@ object EvSavings {
             }
             EvMonth(m, list.sumOf { it.first.kwh }, miles, list.sumOf { it.first.cost }, litres, petrol,
                 list.count { it.second.source == "local" }, list.size)
+        }.associateBy { it.month }.toSortedMap()
+        for ((m, cs) in cfg.credits.groupBy { it.month }) {
+            val row = rows[m] ?: EvMonth(m, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
+            rows[m] = row.copy(credit = row.credit + cs.sumOf { it.amount })
         }
         val latest = petrolPrice(today.toString(), national, local, off?.first, min)
             ?: local.entries.lastOrNull { it.value.first >= min }?.let { PetrolPrice(it.key, it.value.second, "local") }
-        return EvSavingsResult(rows, off?.first, off?.second ?: 0, latest)
+        return EvSavingsResult(rows.values.toList(), off?.first, off?.second ?: 0, latest)
     }
 }

@@ -12,13 +12,16 @@
     "evBasisFrom": "2026-05-01",
     "_commentEvBasisFrom": "Second EV from May 2026: project EV charging at the level seen since then",
     "evSavings": {
-        "_comment": "EV vs petrol (the app's EV tab): a 50 mpg petrol car; the EVs' 3.9 miles/kWh at 90% AC charging efficiency. beforeCharger = charging the Indra charger never saw, from OVO Charge Anytime credits (credit / (flat rate - 6.67p ex VAT)), at the 7p Charge Anytime rate.",
+        "_comment": "EV vs petrol (the app's EV tab): a 50 mpg petrol car; the EVs' 3.9 miles/kWh at 90% AC charging efficiency. beforeCharger = charging the Indra charger never saw, from OVO Charge Anytime credits (credit / (flat rate - 6.67p ex VAT)), at the 7p Charge Anytime rate. credits = one-off EV credits (£ inc VAT), taken off that month's charging cost.",
         "mpg": 50,
         "milesPerKwh": 3.9,
         "chargeEfficiency": 0.9,
         "beforeCharger": [
             {"month": "2025-02", "kwh": 22.6, "rate": 7.0},
             {"month": "2025-03", "kwh": 162.5, "rate": 7.0}
+        ],
+        "credits": [
+            {"month": "2025-02", "amount": 34.91, "note": "OVO Beyond 2000 free miles (EV charger): -33.25 ex VAT"}
         ]
     },
     "exportCorrection": {

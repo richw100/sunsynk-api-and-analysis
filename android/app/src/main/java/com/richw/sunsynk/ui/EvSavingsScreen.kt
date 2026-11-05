@@ -23,6 +23,7 @@ import com.richw.sunsynk.EvSavingsUiState
 import com.richw.sunsynk.EvSavingsViewModel
 import com.richw.sunsynk.analysis.EvMonth
 import com.richw.sunsynk.analysis.EvSavingsConfig
+import com.richw.sunsynk.analysis.EvCredit
 import com.richw.sunsynk.analysis.ExtraCharge
 import java.time.Instant
 import java.time.ZoneId
@@ -69,7 +70,8 @@ private fun SummaryCard(state: EvSavingsUiState) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Saved vs petrol since ${r.months.first().month}", style = MaterialTheme.typography.titleSmall)
             Text(money(t.saved), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = saving)
-            Text("%,.0f miles: %s of electricity instead of %s of petrol".format(t.miles, money(t.evCost), money(t.petrolCost)),
+            Text("%,.0f miles: %s of electricity%s instead of %s of petrol".format(t.miles, money(t.netCost),
+                if (t.credit > 0) " (after ${money(t.credit)} of credits)" else "", money(t.petrolCost)),
                 style = MaterialTheme.typography.bodyMedium)
             if (y.days > 0) Text("Last 12 full months: ${money(y.saved)} saved over %,.0f miles".format(y.miles),
                 style = MaterialTheme.typography.bodyMedium)
@@ -110,7 +112,7 @@ private fun MonthRow(m: EvMonth) {
         val s = MaterialTheme.typography.bodySmall
         Text(m.month, Modifier.weight(1.2f), style = s)
         Text("%,.0f".format(m.miles), Modifier.weight(1f), style = s)
-        Text(money(m.evCost), Modifier.weight(1f), style = s)
+        Text(money(m.netCost) + if (m.credit > 0) "†" else "", Modifier.weight(1f), style = s)
         Text(money(m.petrolCost), Modifier.weight(1f), style = s)
         Text("%.1f%s".format(m.pencePerLitre, if (m.localDays == m.days) "" else "*"), Modifier.weight(0.9f), style = s)
         Text(money(m.saved), Modifier.weight(1f), style = s, color = saving)
@@ -127,7 +129,7 @@ private fun SettingsCard(state: EvSavingsUiState, vm: EvSavingsViewModel) {
                 Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
             }
             Text("* = some days priced from the UK weekly average adjusted to your local supermarkets " +
-                "(local prices start Jan 2026).", style = MaterialTheme.typography.bodySmall)
+                "(local prices start Jan 2026). † = after one-off credits.", style = MaterialTheme.typography.bodySmall)
             if (!open) return@Column
             CarFields(state.config, vm::saveConfig)
             HorizontalDivider()
@@ -142,6 +144,7 @@ private fun CarFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
     var mpk by remember(cfg) { mutableStateOf(cfg.milesPerKwh.toString()) }
     var eff by remember(cfg) { mutableStateOf((cfg.chargeEfficiency * 100).toString()) }
     var extra by remember(cfg) { mutableStateOf(cfg.beforeCharger.joinToString("\n") { "${it.month} ${it.kwh} ${it.rate}" }) }
+    var credits by remember(cfg) { mutableStateOf(cfg.credits.joinToString("\n") { "${it.month} ${it.amount} ${it.note}".trim() }) }
     val num = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(mpg, { mpg = it }, Modifier.weight(1f), label = { Text("Petrol mpg") }, singleLine = true, keyboardOptions = num)
@@ -150,12 +153,19 @@ private fun CarFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
     }
     OutlinedTextField(extra, { extra = it }, Modifier.fillMaxWidth(), label = { Text("Charging before the charger: month kWh p/kWh") },
         minLines = 2)
+    OutlinedTextField(credits, { credits = it }, Modifier.fillMaxWidth(), label = { Text("One-off credits: month £ note") },
+        minLines = 1)
     val parsed = runCatching {
         EvSavingsConfig(mpg.toDouble(), mpk.toDouble(), eff.toDouble() / 100,
             extra.lines().filter { it.isNotBlank() }.map { l ->
                 val (m, k, p) = l.trim().split(Regex("\\s+"))
                 require(Regex("\\d{4}-\\d{2}").matches(m))
                 ExtraCharge(m, k.toDouble(), p.toDouble())
+            },
+            credits.lines().filter { it.isNotBlank() }.map { l ->
+                val parts = l.trim().split(Regex("\\s+"), limit = 3)
+                require(parts.size >= 2 && Regex("\\d{4}-\\d{2}").matches(parts[0]))
+                EvCredit(parts[0], parts[1].removePrefix("£").toDouble(), parts.getOrElse(2) { "" })
             })
     }.getOrNull()
     Button(onClick = { parsed?.let(onSave) }, enabled = parsed != null && parsed != cfg) { Text("Save") }

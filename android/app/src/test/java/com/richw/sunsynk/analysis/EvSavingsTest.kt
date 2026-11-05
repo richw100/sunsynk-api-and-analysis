@@ -88,6 +88,21 @@ class EvSavingsTest {
     }
 
     @Test
+    fun creditsComeOffTheirMonthsChargingCost() {
+        val n = listOf(LocalDate.of(2025, 1, 6) to 140.0)
+        val cfg = EvSavingsConfig(credits = listOf(EvCredit("2025-03", 30.0, "bonus"), EvCredit("2025-03", 5.0),
+            EvCredit("2025-05", 10.0)))
+        val r = EvSavings.calculate(listOf(EvDay("2025-03-02", 20.0, 1.5)), cfg, n, emptyMap(), 0, LocalDate.of(2025, 7, 1))
+        assertEquals(listOf("2025-03", "2025-05"), r.months.map { it.month })
+        val mar = r.months[0]
+        assertEquals(35.0, mar.credit, 1e-9)
+        assertEquals(1.5 - 35.0, mar.netCost, 1e-9)
+        assertEquals(mar.petrolCost - 1.5 + 35.0, mar.saved, 1e-9)
+        assertEquals(10.0, r.months[1].saved, 1e-9)                    // a credit-only month
+        assertEquals(45.0, r.total.credit, 1e-9)
+    }
+
+    @Test
     fun indraDailyKwhReadsMonthReports() {
         tmp.root.resolve("month-2025-04.json").writeText(
             """{"dailyReports":[{"date":"2025-04-02T00:00:00","totals":{"energyImportedKwh":10.27}},{"date":"2025-04-03","totals":{}}]}""")

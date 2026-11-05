@@ -146,6 +146,11 @@ fun parseEvSavings(obj: JsonObject?): com.richw.sunsynk.analysis.EvSavingsConfig
             val o = it.asJsonObject
             com.richw.sunsynk.analysis.ExtraCharge(o.get("month").asString, o.get("kwh").asDouble, o.get("rate").asDouble)
         } ?: d.beforeCharger,
+        credits = obj.getAsJsonArray("credits")?.map {
+            val o = it.asJsonObject
+            com.richw.sunsynk.analysis.EvCredit(o.get("month").asString, o.get("amount").asDouble,
+                o.get("note")?.asString ?: "")
+        } ?: d.credits,
     )
 }
 
@@ -156,6 +161,10 @@ fun evSavingsToJson(c: com.richw.sunsynk.analysis.EvSavingsConfig) = JsonObject(
     add("beforeCharger", JsonArray().apply {
         c.beforeCharger.forEach { e -> add(JsonObject().apply {
             addProperty("month", e.month); addProperty("kwh", e.kwh); addProperty("rate", e.rate) }) }
+    })
+    add("credits", JsonArray().apply {
+        c.credits.forEach { e -> add(JsonObject().apply {
+            addProperty("month", e.month); addProperty("amount", e.amount); addProperty("note", e.note) }) }
     })
 }
 
@@ -270,6 +279,9 @@ class ConfigStore(private val context: Context) {
             }
             // Configs saved before the EV tab existed: adopt the bundled petrol comparison settings.
             if (!json.has("evSavings")) bundled()?.get("evSavings")?.let { json.add("evSavings", it) }
+            json.getAsJsonObject("evSavings")?.let { ev ->
+                if (!ev.has("credits")) bundled()?.getAsJsonObject("evSavings")?.get("credits")?.let { ev.add("credits", it) }
+            }
             loadSettingsFromJson(json)
         } catch (e: Exception) {
             AppSettings()
