@@ -15,7 +15,10 @@ Until Indra is told the tariff, it labels every kWh "Standard", so the split mea
 sessions before the first one with any off-peak energy (``split_known=False``). The E.ON
 meter shows those were the car's own overnight charges (Jun-Jul 2025: all at 00:00-05:00),
 so their energy goes into the scheduled window (ignoring windows under
-``MIN_WINDOW_MINUTES``), else from the first local midnight in the session, else from plug-in.
+``MIN_WINDOW_MINUTES``). Without a window, a small session (under an hour at charger power)
+was a solar top-up (confirmed for Jun 2025: none of it shows on the import meter), so it is
+spread evenly over the session's ``DAYLIGHT_HOURS`` (EnergyDay then lets it soak up export);
+anything else charges from the first local midnight in the session, else from plug-in.
 """
 import glob
 import json
@@ -29,6 +32,7 @@ LOCAL_TZ = ZoneInfo('Europe/London')
 DEFAULT_CHARGER_KW = 7.4       # used when no telemetry is cached to measure it from
 SAMPLE_CAP_S = 300             # a telemetry sample never stands for more than 5 minutes
 MIN_WINDOW_MINUTES = 30        # shorter scheduled 'events' (e.g. 23:05-23:10) aren't charging windows
+DAYLIGHT_HOURS = (7, 19)       # local hours a solar top-up is spread over
 
 
 def _utc(stamp: str) -> datetime:
@@ -94,6 +98,10 @@ def synthesise_wh(session: dict, charger_kw: float, split_known: bool = True) ->
         # Indra didn't know the tariff: it was all scheduled (overnight) charging.
         windows = [(a, b) for a, b in windows if (b - a) >= timedelta(minutes=MIN_WINDOW_MINUTES)]
         off_wh, std_wh = off_wh + std_wh, 0.0
+        daylight = [m for m in minutes
+                    if DAYLIGHT_HOURS[0] <= m.astimezone(LOCAL_TZ).hour < DAYLIGHT_HOURS[1]]
+        if not windows and off_wh < charger_kw * 1000 and daylight:
+            return [(m, off_wh / len(daylight)) for m in daylight]      # solar top-up
         if not windows:
             midnight = _first_local_midnight(start, end)
             windows = [(midnight, end)] if midnight else [(start, end)]

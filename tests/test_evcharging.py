@@ -54,12 +54,25 @@ def test_synthesise_unknown_split_charges_in_the_schedule_window():
 
 
 def test_synthesise_unknown_split_without_window_starts_at_local_midnight():
-    overnight = _session('n', '2025-06-15T13:28:00Z', '2025-06-16T06:58:00Z', std=3.0)
+    overnight = _session('n', '2025-06-15T13:28:00Z', '2025-06-16T06:58:00Z', std=9.0)
     minutes = synthesise_wh(overnight, charger_kw=6.0, split_known=False)
     assert min(t for t, _ in minutes) == datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc)   # 00:00 BST
-    assert len(minutes) == 30
+    assert len(minutes) == 90
+    night_only = _session('o', '2025-01-15T20:00:00Z', '2025-01-16T06:30:00Z', std=3.0)     # no daylight
+    assert min(t for t, _ in synthesise_wh(night_only, charger_kw=6.0, split_known=False)).hour == 0
+
+
+def test_synthesise_unknown_split_small_session_is_a_solar_top_up():
+    # 3 kWh (< 1 h at 6 kW) over two days: spread evenly over 07:00-19:00 BST only
+    s = _session('s', '2025-06-21T14:35:00Z', '2025-06-23T06:56:00Z', std=3.0,
+                 events=[('2025-06-21T22:05:00Z', '2025-06-21T22:10:00Z')])
+    minutes = synthesise_wh(s, charger_kw=6.0, split_known=False)
+    assert sum(w for _, w in minutes) == pytest.approx(3000)
+    assert {t.hour for t, _ in minutes} == set(range(6, 18))          # UTC = 07-18 BST
+    assert len({round(w, 9) for _, w in minutes}) == 1
+    assert len(minutes) == 205 + 720 + 56          # 21st from 14:35, all the 22nd, 23rd to 06:56 UTC
     daytime = _session('d', '2025-06-11T08:46:00Z', '2025-06-11T10:26:00Z', std=1.0)
-    assert min(t for t, _ in synthesise_wh(daytime, charger_kw=6.0, split_known=False)).minute == 46
+    assert len(synthesise_wh(daytime, charger_kw=6.0, split_known=False)) == 100
 
 
 def test_load_ev_profiles_treats_sessions_before_the_first_off_peak_one_as_scheduled(tmp_path):
@@ -80,7 +93,7 @@ def test_load_ev_profiles_prefers_telemetry_and_uses_local_time(tmp_path):
     (tmp_path / 'session-t.json').write_text(json.dumps(with_tele))
     (tmp_path / 'telemetry-t.json').write_text(json.dumps(
         [{'time': f'2026-07-01T23:0{m}:00Z', 'powerKw': 6.0, 'tariffRateType': 3} for m in range(5)]))
-    synth = _session('s', '2026-01-10T12:00:00Z', '2026-01-10T13:00:00Z', std=0.5)
+    synth = _session('s', '2026-01-10T12:00:00Z', '2026-01-10T13:00:00Z', off=0.5)   # no window: from plug-in
     (tmp_path / 'session-s.json').write_text(json.dumps(synth))
     (tmp_path / 'session-open.json').write_text(json.dumps({'id': 'open', 'start': '2026-01-11T12:00:00Z', 'end': None}))
 

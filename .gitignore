@@ -14,3 +14,4 @@ config.local.json
 indraData/
 tariffData/
 eonData/
+ovobills/

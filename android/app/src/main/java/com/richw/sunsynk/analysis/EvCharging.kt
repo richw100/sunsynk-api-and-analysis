@@ -23,7 +23,9 @@ import java.time.temporal.ChronoUnit
  * Until Indra is told the tariff it labels every kWh "Standard", so for sessions before the
  * first one with any off-peak energy (`splitKnown = false`) the split means nothing: the E.ON
  * meter shows those were the car's own overnight charges, so their energy goes into the
- * scheduled window (windows under [MIN_WINDOW_MINUTES] ignored), else from the first local
+ * scheduled window (windows under [MIN_WINDOW_MINUTES] ignored). Without a window, a small
+ * session (under an hour at charger power) was a solar top-up, spread evenly over the session's
+ * [DAYLIGHT_HOURS] (EnergyDay lets it soak up export); anything else charges from the first local
  * midnight in the session, else from plug-in.
  */
 object EvCharging {
@@ -31,6 +33,7 @@ object EvCharging {
     const val DEFAULT_CHARGER_KW = 7.4
     private const val SAMPLE_CAP_S = 300L
     const val MIN_WINDOW_MINUTES = 30L      // shorter scheduled events (e.g. 23:05-23:10) aren't charging windows
+    val DAYLIGHT_HOURS = 7 until 19         // local hours a solar top-up is spread over
 
     private fun utc(stamp: String): Instant = Instant.parse(if (stamp.endsWith("Z")) stamp else "${stamp}Z")
 
@@ -89,6 +92,9 @@ object EvCharging {
             windows = windows.filter { (a, b) -> Duration.between(a, b).toMinutes() >= MIN_WINDOW_MINUTES }
             offKwh += stdKwh
             stdKwh = 0.0
+            val daylight = minutes.filter { it.atZone(LOCAL_TZ).hour in DAYLIGHT_HOURS }
+            if (windows.isEmpty() && offKwh < chargerKw && daylight.isNotEmpty())
+                return daylight.map { Pair(it, offKwh * 1000 / daylight.size) }        // solar top-up
             if (windows.isEmpty()) windows = listOf(Pair(firstLocalMidnight(start, end) ?: start, end))
         }
         fun inWindow(m: Instant) = windows.any { (a, b) -> !m.isBefore(a) && m.isBefore(b) }

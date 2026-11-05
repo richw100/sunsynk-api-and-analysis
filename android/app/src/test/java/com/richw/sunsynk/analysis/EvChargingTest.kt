@@ -73,12 +73,26 @@ class EvChargingTest {
     @Test
     fun synthesiseUnknownSplitWithoutWindowStartsAtLocalMidnight() {
         val overnight = EvCharging.synthesiseWh(
-            session("n", "2025-06-15T13:28:00Z", "2025-06-16T06:58:00Z", std = 3.0), 6.0, splitKnown = false)
+            session("n", "2025-06-15T13:28:00Z", "2025-06-16T06:58:00Z", std = 9.0), 6.0, splitKnown = false)
         assertEquals(Instant.parse("2025-06-15T23:00:00Z"), overnight.minOf { it.first })
-        assertEquals(30, overnight.size)
+        assertEquals(90, overnight.size)
+        val nightOnly = EvCharging.synthesiseWh(
+            session("o", "2025-01-15T20:00:00Z", "2025-01-16T06:30:00Z", std = 3.0), 6.0, splitKnown = false)
+        assertEquals(0, nightOnly.minOf { it.first }.atOffset(ZoneOffset.UTC).hour)
+    }
+
+    @Test
+    fun synthesiseUnknownSplitSmallSessionIsASolarTopUp() {
+        val s = session("s", "2025-06-21T14:35:00Z", "2025-06-23T06:56:00Z", std = 3.0,
+            events = listOf("2025-06-21T22:05:00Z" to "2025-06-21T22:10:00Z"))
+        val minutes = EvCharging.synthesiseWh(s, 6.0, splitKnown = false)
+        assertEquals(3000.0, minutes.sumOf { it.second }, 1e-6)
+        assertEquals((6 until 18).toSet(), minutes.map { it.first.atOffset(ZoneOffset.UTC).hour }.toSet())
+        assertEquals(205 + 720 + 56, minutes.size)
+        assertEquals(1, minutes.map { Math.round(it.second * 1e9) }.toSet().size)
         val daytime = EvCharging.synthesiseWh(
             session("d", "2025-06-11T08:46:00Z", "2025-06-11T10:26:00Z", std = 1.0), 6.0, splitKnown = false)
-        assertEquals(46, daytime.minOf { it.first }.atOffset(ZoneOffset.UTC).minute)
+        assertEquals(100, daytime.size)
     }
 
     @Test
@@ -102,7 +116,7 @@ class EvChargingTest {
         dir.resolve("telemetry-t.json").writeText(JsonArray().apply {
             (0 until 5).forEach { add(row("2026-07-01T23:0$it:00Z", 6.0)) }
         }.toString())
-        dir.resolve("session-s.json").writeText(session("s", "2026-01-10T12:00:00Z", "2026-01-10T13:00:00Z", std = 0.5).toString())
+        dir.resolve("session-s.json").writeText(session("s", "2026-01-10T12:00:00Z", "2026-01-10T13:00:00Z", off = 0.5).toString())
         dir.resolve("session-open.json").writeText(session("open", "2026-01-11T12:00:00Z", null).toString())
         val prof = EvCharging.loadProfiles(dir)
         assertEquals(6000.0, prof["2026-07-02"]!!["00:00"]!!, 1e-6)
