@@ -36,6 +36,10 @@ Usage: python analysis/tariffcompare.py [key:value ...]
                     dynamic tariffs use the last 12 complete months)
   tariffDataDir:DIR cache for fetched tariff data (default tariffData)
   top:N             only print the N cheapest tariffs (default: all)
+  fuelPostcode:XXX  find the supermarket forecourts near a postcode for EV VS PETROL (the postcode
+                    isn't stored; the forecourts go in config.local.json) [fuelRadius:N miles, 8]
+  evSavings:OFF     skip EV VS PETROL (home charging vs a petrol car at local supermarket prices;
+                    see analysis/ev_savings.py and the evSavings config block)
 """
 import asyncio
 import csv
@@ -58,6 +62,8 @@ from analysis.projection import SlotProjection, latest_rates
 from analysis import tariff_sources
 from analysis.eon_client import load_daily_kwh, load_tariffs
 from analysis.tariff_sources import DEFAULTS as TARIFF_DEFAULTS, tou_slot_rates
+from analysis import ev_savings
+from analysis.indra_client import load_daily_charge_kwh
 
 LOCAL_CONFIG = 'config.local.json'
 
@@ -574,6 +580,7 @@ async def main():  # pylint: disable=too-many-locals
     )
     slots = SlotProjection(str(settings['evBasisFrom']))
     ev_profiles = _load_ev_profiles(settings)
+    ev_by_day = []          # (date, 48 EV import kWh, solar into the car kWh) for EV VS PETROL
 
     print(f"Fetching tariffs for region {cfg['region']} ...")
     tariffs, stats = await tariff_sources.fetch_all(cfg)
@@ -589,7 +596,9 @@ async def main():  # pylint: disable=too-many-locals
                 str(settings['startDate']), str(settings['stopDate']), int(settings['scanFromYear']),
                 show_days, {}, {}, {}, {'hits': 0, 'misses': 0},
                 settings['exportCorrection'], ev_profiles):
-            slots.add_day(date_str, *energyday.import_slots(), energyday.export_slots())
+            total_wh, ev_wh = energyday.import_slots()
+            slots.add_day(date_str, total_wh, ev_wh, energyday.export_slots())
+            ev_by_day.append((date_str, [w / 1000 for w in ev_wh], energyday.get_calc_ev_from_pv() / 1000))
 
     derived = prices.get_derived()
     house, ev = annual_profile(
@@ -624,6 +633,12 @@ async def main():  # pylint: disable=too-many-locals
                         f"_{datetime.now().strftime('%Y%m%d-%H%M%S')}-tariffs-{cfg['region']}.csv")
     write_csv(rows + export_rows + gas_rows, path)
     print(f'\nCSV: {path}')
+
+    try:
+        await ev_savings.report(settings, ev_by_day, energy_prices_data, LOCAL_CONFIG, sys.argv[1:],
+                                {d: v['total'] for d, v in load_daily_charge_kwh(settings.get('evDataDir') or 'indraData').items()})
+    except (RuntimeError, OSError, ValueError) as e:
+        print(f'\nEV vs petrol skipped: {e}')
 
 
 if __name__ == '__main__':

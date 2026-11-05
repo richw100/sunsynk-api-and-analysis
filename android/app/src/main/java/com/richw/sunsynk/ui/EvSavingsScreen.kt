@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
@@ -133,6 +134,8 @@ private fun SettingsCard(state: EvSavingsUiState, vm: EvSavingsViewModel) {
             if (!open) return@Column
             CarFields(state.config, vm::saveConfig)
             HorizontalDivider()
+            CreditFields(state.config, vm::saveConfig)
+            HorizontalDivider()
             StationFields(state, vm)
         }
     }
@@ -144,7 +147,6 @@ private fun CarFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
     var mpk by remember(cfg) { mutableStateOf(cfg.milesPerKwh.toString()) }
     var eff by remember(cfg) { mutableStateOf((cfg.chargeEfficiency * 100).toString()) }
     var extra by remember(cfg) { mutableStateOf(cfg.beforeCharger.joinToString("\n") { "${it.month} ${it.kwh} ${it.rate}" }) }
-    var credits by remember(cfg) { mutableStateOf(cfg.credits.joinToString("\n") { "${it.month} ${it.amount} ${it.note}".trim() }) }
     val num = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(mpg, { mpg = it }, Modifier.weight(1f), label = { Text("Petrol mpg") }, singleLine = true, keyboardOptions = num)
@@ -153,8 +155,6 @@ private fun CarFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
     }
     OutlinedTextField(extra, { extra = it }, Modifier.fillMaxWidth(), label = { Text("Charging before the charger: month kWh p/kWh") },
         minLines = 2)
-    OutlinedTextField(credits, { credits = it }, Modifier.fillMaxWidth(), label = { Text("One-off credits: month £ note") },
-        minLines = 1)
     val parsed = runCatching {
         EvSavingsConfig(mpg.toDouble(), mpk.toDouble(), eff.toDouble() / 100,
             extra.lines().filter { it.isNotBlank() }.map { l ->
@@ -162,13 +162,44 @@ private fun CarFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
                 require(Regex("\\d{4}-\\d{2}").matches(m))
                 ExtraCharge(m, k.toDouble(), p.toDouble())
             },
-            credits.lines().filter { it.isNotBlank() }.map { l ->
-                val parts = l.trim().split(Regex("\\s+"), limit = 3)
-                require(parts.size >= 2 && Regex("\\d{4}-\\d{2}").matches(parts[0]))
-                EvCredit(parts[0], parts[1].removePrefix("£").toDouble(), parts.getOrElse(2) { "" })
-            })
+            cfg.credits)
     }.getOrNull()
     Button(onClick = { parsed?.let(onSave) }, enabled = parsed != null && parsed != cfg) { Text("Save") }
+}
+
+/** One-off credits (e.g. a supplier's free-miles bonus): a row per credit with a delete button,
+ *  and month / £ / note boxes to add another. Adding or deleting saves straight away. */
+@Composable
+private fun CreditFields(cfg: EvSavingsConfig, onSave: (EvSavingsConfig) -> Unit) {
+    Text("One-off credits", style = MaterialTheme.typography.titleSmall)
+    Text("Taken off that month's charging cost, e.g. a supplier's free-miles bonus (£ including VAT).",
+        style = MaterialTheme.typography.bodySmall)
+    cfg.credits.forEachIndexed { i, c ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(c.month, Modifier.weight(0.9f), style = MaterialTheme.typography.bodyMedium)
+            Text("£%,.2f".format(c.amount), Modifier.weight(0.8f), style = MaterialTheme.typography.bodyMedium)
+            Text(c.note, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
+            IconButton(onClick = { onSave(cfg.copy(credits = cfg.credits.filterIndexed { j, _ -> j != i })) }) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete credit")
+            }
+        }
+    }
+    var month by rememberSaveable { mutableStateOf(java.time.YearMonth.now().toString()) }
+    var amount by rememberSaveable { mutableStateOf("") }
+    var note by rememberSaveable { mutableStateOf("") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(month, { month = it }, Modifier.weight(1.1f), label = { Text("Month") }, singleLine = true,
+            placeholder = { Text("YYYY-MM") }, isError = !Regex("\\d{4}-(0[1-9]|1[0-2])").matches(month),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        OutlinedTextField(amount, { amount = it }, Modifier.weight(1f), label = { Text("£") }, singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+    }
+    OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("Note (optional)") }, singleLine = true)
+    val value = amount.removePrefix("£").toDoubleOrNull()
+    Button(onClick = {
+        onSave(cfg.copy(credits = (cfg.credits + EvCredit(month, value!!, note.trim())).sortedBy { it.month }))
+        amount = ""; note = ""
+    }, enabled = Regex("\\d{4}-(0[1-9]|1[0-2])").matches(month) && value != null && value > 0) { Text("Add credit") }
 }
 
 @Composable
