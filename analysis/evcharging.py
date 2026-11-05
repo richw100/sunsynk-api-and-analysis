@@ -10,6 +10,12 @@ kWh split and the scheduled charging window(s) (``events``). The car draws a fla
 ``charger_kw`` while charging, so off-peak energy is placed from the start of the
 scheduled window and standard-rate energy from plug-in, minute by minute. Any energy
 that doesn't fit is spread evenly over the session.
+
+Until Indra is told the tariff, it labels every kWh "Standard", so the split means nothing for
+sessions before the first one with any off-peak energy (``split_known=False``). The E.ON
+meter shows those were the car's own overnight charges (Jun-Jul 2025: all at 00:00-05:00),
+so their energy goes into the scheduled window (ignoring windows under
+``MIN_WINDOW_MINUTES``), else from the first local midnight in the session, else from plug-in.
 """
 import glob
 import json
@@ -22,6 +28,7 @@ from zoneinfo import ZoneInfo
 LOCAL_TZ = ZoneInfo('Europe/London')
 DEFAULT_CHARGER_KW = 7.4       # used when no telemetry is cached to measure it from
 SAMPLE_CAP_S = 300             # a telemetry sample never stands for more than 5 minutes
+MIN_WINDOW_MINUTES = 30        # shorter scheduled 'events' (e.g. 23:05-23:10) aren't charging windows
 
 
 def _utc(stamp: str) -> datetime:
@@ -57,7 +64,15 @@ def telemetry_wh(rows: list) -> list:
     return out
 
 
-def synthesise_wh(session: dict, charger_kw: float) -> list:
+def _first_local_midnight(start: datetime, end: datetime):
+    """The first local midnight after ``start`` (UTC), or None if the session ends first."""
+    local = start.astimezone(LOCAL_TZ)
+    midnight = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(), LOCAL_TZ)
+    midnight = midnight.astimezone(start.tzinfo)
+    return midnight if midnight < end else None
+
+
+def synthesise_wh(session: dict, charger_kw: float, split_known: bool = True) -> list:
     """[(utc minute, Wh)] for a session without telemetry (see module docstring)."""
     start, end = _utc(session['start']), _utc(session['end'])
     minutes = []
@@ -75,6 +90,13 @@ def synthesise_wh(session: dict, charger_kw: float) -> list:
     per_min = charger_kw * 1000 / 60
     energy = defaultdict(float)
     off_wh, std_wh = (kwh * 1000 for kwh in _subtotals(session))
+    if not split_known:
+        # Indra didn't know the tariff: it was all scheduled (overnight) charging.
+        windows = [(a, b) for a, b in windows if (b - a) >= timedelta(minutes=MIN_WINDOW_MINUTES)]
+        off_wh, std_wh = off_wh + std_wh, 0.0
+        if not windows:
+            midnight = _first_local_midnight(start, end)
+            windows = [(midnight, end)] if midnight else [(start, end)]
     # off-peak into the scheduled window(s); standard from plug-in outside them. With no
     # schedule, everything charges straight away from plug-in.
     for wh, pool in ((off_wh, [m for m in minutes if in_window(m)] if windows else minutes),
@@ -117,10 +139,13 @@ def load_ev_profiles(data_dir: str = 'indraData', charger_kw: float | None = Non
             if rows:
                 telemetry[sid] = rows
     kw = charger_kw or _charger_kw(telemetry)
+    # Indra only splits off-peak/standard once it knows the tariff (see module docstring).
+    split_from = min((s['start'] for s in sessions.values() if _subtotals(s)[0] > 0), default=None)
 
     wh_by_slot = defaultdict(lambda: defaultdict(float))
     for sid, session in sessions.items():
-        samples = telemetry_wh(telemetry[sid]) if sid in telemetry else synthesise_wh(session, kw)
+        samples = telemetry_wh(telemetry[sid]) if sid in telemetry else synthesise_wh(
+            session, kw, split_known=split_from is not None and session['start'] >= split_from)
         for when, wh in samples:
             day, slot = _slot(when)
             wh_by_slot[day][slot] += wh

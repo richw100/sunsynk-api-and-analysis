@@ -19,11 +19,18 @@ import java.time.temporal.ChronoUnit
  * (`events`): the car draws a flat charger power, so off-peak energy goes from the start of
  * the scheduled window and standard-rate energy from plug-in, minute by minute; any energy
  * that doesn't fit is spread evenly over the session.
+ *
+ * Until Indra is told the tariff it labels every kWh "Standard", so for sessions before the
+ * first one with any off-peak energy (`splitKnown = false`) the split means nothing: the E.ON
+ * meter shows those were the car's own overnight charges, so their energy goes into the
+ * scheduled window (windows under [MIN_WINDOW_MINUTES] ignored), else from the first local
+ * midnight in the session, else from plug-in.
  */
 object EvCharging {
     val LOCAL_TZ: ZoneId = ZoneId.of("Europe/London")
     const val DEFAULT_CHARGER_KW = 7.4
     private const val SAMPLE_CAP_S = 300L
+    const val MIN_WINDOW_MINUTES = 30L      // shorter scheduled events (e.g. 23:05-23:10) aren't charging windows
 
     private fun utc(stamp: String): Instant = Instant.parse(if (stamp.endsWith("Z")) stamp else "${stamp}Z")
 
@@ -55,8 +62,14 @@ object EvCharging {
         }
     }
 
+    /** The first local midnight after [start], or null if the session ends first. */
+    private fun firstLocalMidnight(start: Instant, end: Instant): Instant? {
+        val midnight = start.atZone(LOCAL_TZ).toLocalDate().plusDays(1).atStartOfDay(LOCAL_TZ).toInstant()
+        return midnight.takeIf { it.isBefore(end) }
+    }
+
     /** [(minute, Wh)] for a session without telemetry (see class docs). */
-    fun synthesiseWh(session: JsonObject, chargerKw: Double): List<Pair<Instant, Double>> {
+    fun synthesiseWh(session: JsonObject, chargerKw: Double, splitKnown: Boolean = true): List<Pair<Instant, Double>> {
         val start = utc(session.get("start").asString)
         val end = utc(session.get("end").asString)
         val minutes = mutableListOf<Instant>()
@@ -66,15 +79,22 @@ object EvCharging {
             t = t.plusSeconds(60)
         }
         if (minutes.isEmpty()) return emptyList()
-        val windows = (session.getAsJsonArray("events") ?: JsonArray()).map {
+        var windows = (session.getAsJsonArray("events") ?: JsonArray()).map {
             val e = it.asJsonObject
             Pair(utc(e.get("start").asString), utc(e.get("end").asString))
+        }
+        var (offKwh, stdKwh) = subtotals(session)
+        if (!splitKnown) {
+            // Indra didn't know the tariff: it was all scheduled (overnight) charging.
+            windows = windows.filter { (a, b) -> Duration.between(a, b).toMinutes() >= MIN_WINDOW_MINUTES }
+            offKwh += stdKwh
+            stdKwh = 0.0
+            if (windows.isEmpty()) windows = listOf(Pair(firstLocalMidnight(start, end) ?: start, end))
         }
         fun inWindow(m: Instant) = windows.any { (a, b) -> !m.isBefore(a) && m.isBefore(b) }
 
         val perMin = chargerKw * 1000 / 60
         val energy = LinkedHashMap<Instant, Double>()
-        val (offKwh, stdKwh) = subtotals(session)
         val passes = listOf(
             Pair(offKwh * 1000, if (windows.isNotEmpty()) minutes.filter { inWindow(it) } else minutes),
             Pair(stdKwh * 1000, minutes.filter { !inWindow(it) }),
@@ -115,9 +135,13 @@ object EvCharging {
             else if (samples.size % 2 == 1) samples[samples.size / 2]
             else (samples[samples.size / 2 - 1] + samples[samples.size / 2]) / 2
         }
+        // Indra only splits off-peak/standard once it knows the tariff (see class docs).
+        val splitFrom = sessions.values.filter { subtotals(it).first > 0 }
+            .minOfOrNull { utc(it.get("start").asString) }
         val whBySlot = HashMap<String, HashMap<String, Double>>()
         for ((id, session) in sessions) {
-            val samples = telemetry[id]?.let { telemetryWh(it) } ?: synthesiseWh(session, kw)
+            val known = splitFrom != null && !utc(session.get("start").asString).isBefore(splitFrom)
+            val samples = telemetry[id]?.let { telemetryWh(it) } ?: synthesiseWh(session, kw, known)
             for ((at, wh) in samples) {
                 val (day, slot) = slot(at)
                 val slots = whBySlot.getOrPut(day) { HashMap() }

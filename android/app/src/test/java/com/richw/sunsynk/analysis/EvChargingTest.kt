@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.time.Instant
 import java.time.ZoneOffset
 
 /** Parity with Python tests/test_evcharging.py and the EV cases in tests/test_calculations.py. */
@@ -55,6 +56,43 @@ class EvChargingTest {
         val minutes = EvCharging.synthesiseWh(session("b", "2026-10-02T16:00:00Z", "2026-10-02T16:10:00Z", std = 2.0), 6.0)
         assertEquals(10, minutes.size)
         assertEquals(2000.0, minutes.sumOf { it.second }, 1e-6)
+    }
+
+    @Test
+    fun synthesiseUnknownSplitChargesInTheScheduleWindow() {
+        val s = session("u", "2025-07-01T22:03:00Z", "2025-07-02T07:58:00Z", std = 6.0,
+            events = listOf("2025-07-01T22:05:00Z" to "2025-07-01T22:10:00Z",
+                "2025-07-01T23:10:00Z" to "2025-07-02T05:55:00Z"))
+        val minutes = EvCharging.synthesiseWh(s, 6.0, splitKnown = false)
+        assertEquals(6000.0, minutes.sumOf { it.second }, 1e-6)
+        assertEquals(Instant.parse("2025-07-01T23:10:00Z"), minutes.minOf { it.first })
+        assertEquals(Instant.parse("2025-07-02T00:09:00Z"), minutes.maxOf { it.first })
+        assertEquals(22, EvCharging.synthesiseWh(s, 6.0).minOf { it.first }.atOffset(ZoneOffset.UTC).hour)
+    }
+
+    @Test
+    fun synthesiseUnknownSplitWithoutWindowStartsAtLocalMidnight() {
+        val overnight = EvCharging.synthesiseWh(
+            session("n", "2025-06-15T13:28:00Z", "2025-06-16T06:58:00Z", std = 3.0), 6.0, splitKnown = false)
+        assertEquals(Instant.parse("2025-06-15T23:00:00Z"), overnight.minOf { it.first })
+        assertEquals(30, overnight.size)
+        val daytime = EvCharging.synthesiseWh(
+            session("d", "2025-06-11T08:46:00Z", "2025-06-11T10:26:00Z", std = 1.0), 6.0, splitKnown = false)
+        assertEquals(46, daytime.minOf { it.first }.atOffset(ZoneOffset.UTC).minute)
+    }
+
+    @Test
+    fun loadProfilesTreatsSessionsBeforeTheFirstOffPeakOneAsScheduled() {
+        val dir = tmp.root
+        val window = { d: String, e: String -> listOf("${d}T23:10:00Z" to "${e}T05:55:00Z") }
+        dir.resolve("session-e.json").writeText(session("e", "2025-07-01T22:03:00Z", "2025-07-02T07:58:00Z",
+            std = 1.0, events = window("2025-07-01", "2025-07-02")).toString())
+        dir.resolve("session-l.json").writeText(session("l", "2025-08-01T22:03:00Z", "2025-08-02T07:58:00Z",
+            off = 1.0, std = 0.5, events = window("2025-08-01", "2025-08-02")).toString())
+        val prof = EvCharging.loadProfiles(dir, 6.0)
+        assertEquals(setOf("00:10", "00:15"), prof["2025-07-02"]!!.keys)
+        assertTrue("2025-07-01" !in prof)
+        assertTrue("23:00" in prof["2025-08-01"]!! && "00:10" in prof["2025-08-02"]!!)
     }
 
     @Test
