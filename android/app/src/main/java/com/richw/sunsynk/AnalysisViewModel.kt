@@ -100,6 +100,7 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
             val meterExport = FuseClient.loadDailyExportKwh(dataSources.fuseDir)
             val calcExportByDate = sortedMapOf<String, Double>()   // first pass only
             val slots = SlotProjection(settings.evBasisFrom)          // first pass only, for the Tariffs tab
+            val historyDays = HashMap<String, IntArray>()             // first pass: each day's half-hours
 
             val priceFiles = settings.energyPrices
             val batteryConfigs = settings.batteryConfigs
@@ -194,7 +195,15 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                                     if (firstPass) {
                                         calcExportByDate[dayDate] = energyDay.getCalcExport() / 1000
                                         val (total, ev) = energyDay.importSlots()
-                                        slots.addDay(dayDate, total, ev, energyDay.exportSlots())
+                                        val exportSlots = energyDay.exportSlots()
+                                        slots.addDay(dayDate, total, ev, exportSlots)
+                                        historyDays[dayDate] = IntArray(144) { k ->
+                                            Math.round(when {
+                                                k < 48 -> total[k] - ev[k]
+                                                k < 96 -> ev[k - 48]
+                                                else -> exportSlots[k - 96]
+                                            }).toInt()
+                                        }
                                     }
                                 }
                             }
@@ -203,7 +212,12 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                     }
 
                     prices.getGrandTotals()
-                    if (firstPass && slots.days > 0) saveTariffProfile(prices, priceJson, slots)
+                    if (firstPass && slots.days > 0) {
+                        saveTariffProfile(prices, priceJson, slots)
+                        TariffHistoryDaysStore(context).save(com.richw.sunsynk.analysis.HistoryDays(
+                            java.time.LocalDateTime.now().withNano(0).toString().replace('T', ' '),
+                            com.richw.sunsynk.analysis.TariffHistory.actualPeriods(priceJson), historyDays))
+                    }
                     allPrices.add(prices)
                 }
 

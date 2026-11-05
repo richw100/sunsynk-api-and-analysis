@@ -32,6 +32,7 @@ class TariffSources(
     cacheRoot: File,
     private val today: LocalDate = LocalDate.now(),
     private val log: (String) -> Unit = {},
+    cacheDirName: String? = null,          // default: today's date (a cache for the day)
 ) {
     companion object {
         val LOCAL: ZoneId = ZoneId.of("Europe/London")
@@ -238,7 +239,7 @@ class TariffSources(
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
-    private val cacheDir = File(cacheRoot, today.toString()).also { it.mkdirs() }
+    private val cacheDir = File(cacheRoot, cacheDirName ?: today.toString()).also { it.mkdirs() }
     private val sem = Semaphore(6)
     private val callCount = java.util.concurrent.atomic.AtomicInteger()
     private val hitCount = java.util.concurrent.atomic.AtomicInteger()
@@ -264,9 +265,9 @@ class TariffSources(
         return body
     }
 
-    private suspend fun getJson(url: String): JsonObject = JsonParser.parseString(getText(url)).asJsonObject
+    suspend fun getJson(url: String): JsonObject = JsonParser.parseString(getText(url)).asJsonObject
 
-    private suspend fun pages(first: String): List<JsonObject> {
+    suspend fun pages(first: String): List<JsonObject> {
         val out = mutableListOf<JsonObject>()
         var url: String? = first
         while (url != null) {

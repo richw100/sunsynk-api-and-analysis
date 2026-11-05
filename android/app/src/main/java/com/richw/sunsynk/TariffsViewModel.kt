@@ -5,6 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.richw.sunsynk.analysis.ExportRow
+import com.richw.sunsynk.analysis.HistoryResult
+import com.richw.sunsynk.analysis.TariffHistory
+import com.richw.sunsynk.api.TariffHistorySource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.richw.sunsynk.analysis.ImportRow
 import com.richw.sunsynk.analysis.Pair3
 import com.richw.sunsynk.analysis.Tariff
@@ -27,6 +32,12 @@ data class TariffsUiState(
     val exports: List<ExportRow> = emptyList(),
     val pairs: List<Pair3> = emptyList(),
     val log: List<String> = emptyList(),
+    val mode: String = "today",           // "today" (latest rates, projected year) or "history"
+    val history: HistoryResult? = null,   // actual days priced at historic rates
+    val historyBusy: String? = null,
+    val historyError: String? = null,
+    val historyNote: String? = null,      // days/period/request counts
+    val historyAll: Boolean = false,      // all data vs the last 12 full months
 )
 
 /**
@@ -39,6 +50,7 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
     private val cacheRoot = File(context.filesDir, "tariffData")
     private var tariffs: List<Tariff> = emptyList()
     private var job: Job? = null
+    private var historyJob: Job? = null
 
     private val _state = MutableStateFlow(TariffsUiState(region = prefs.tariffRegion, profile = profiles.load()))
     val state = _state.asStateFlow()
@@ -83,7 +95,8 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
             _state.value = _state.value.copy(busy = "Fetching latest rates…", error = null)
             try {
                 if (force) File(cacheRoot, java.time.LocalDate.now().toString()).deleteRecursively()
-                cacheRoot.listFiles()?.filter { it.name < java.time.LocalDate.now().minusDays(7).toString() }
+                cacheRoot.listFiles()?.filter { it.name != TariffHistorySource.HISTORY_DIR &&
+                    it.name < java.time.LocalDate.now().minusDays(7).toString() }
                     ?.forEach { it.deleteRecursively() }
                 val src = TariffSources(cacheRoot, log = { synchronized(log) { log.add(it) } })
                 tariffs = src.fetchAll(region)
@@ -95,6 +108,46 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
                 reprice()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busy = null, error = e.message ?: "Fetch failed", log = log.toList())
+            }
+        }
+    }
+
+    fun setMode(mode: String) { _state.value = _state.value.copy(mode = mode) }
+    fun setHistoryAll(all: Boolean) { _state.value = _state.value.copy(historyAll = all) }
+
+    /** Price the latest analysis run's actual days at the rates each tariff charged on the day. */
+    fun priceHistory() {
+        val region = _state.value.region
+        if (region !in TariffSources.REGION_NAMES) {
+            _state.value = _state.value.copy(historyError = "Set your region letter (A-P) first")
+            return
+        }
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch {
+            val log = mutableListOf<String>()
+            _state.value = _state.value.copy(historyBusy = "Loading your days…", historyError = null)
+            try {
+                val saved = withContext(Dispatchers.IO) { TariffHistoryDaysStore(context).load() }
+                    ?: throw Exception("Run the analysis first: it saves the days this prices")
+                if (saved.days.isEmpty()) throw Exception("The last analysis run had no days")
+                val start = java.time.LocalDate.parse(saved.days.keys.min())
+                val stop = java.time.LocalDate.parse(saved.days.keys.max())
+                _state.value = _state.value.copy(historyBusy = "Fetching rate history $start to $stop…")
+                val src = TariffHistorySource(cacheRoot, log = { synchronized(log) { log.add(it) } })
+                val tariffs = src.fetch(region, start, stop)
+                _state.value = _state.value.copy(historyBusy = "Pricing ${saved.days.size} days…")
+                val result = withContext(Dispatchers.Default) {
+                    TariffHistory.priceHistory(saved.days, saved.periods, tariffs)
+                }
+                val days = result.kwh.values.sumOf { it.days }
+                val skipped = if (result.skipped.isEmpty()) "" else
+                    "; left out: " + result.skipped.entries.joinToString { "${it.key} ${it.value}" }
+                log.add("${tariffs.size} tariffs: ${src.calls} requests, ${src.hits} from cache")
+                _state.value = _state.value.copy(historyBusy = null, history = result, log = log.toList(),
+                    historyNote = "$days days, $start to $stop (analysis run ${saved.savedAt})$skipped")
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(historyBusy = null, historyError = e.message ?: "Failed",
+                    log = log.toList())
             }
         }
     }

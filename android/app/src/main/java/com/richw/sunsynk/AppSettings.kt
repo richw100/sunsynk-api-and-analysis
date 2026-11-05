@@ -405,6 +405,20 @@ class TariffProfileStore(context: Context) {
     } catch (e: Exception) { null }
 }
 
+/** Each day's half-hourly house/EV import and export from the latest analysis run, plus the
+ *  energyPrices periods, for the Tariffs tab's history view (private filesDir). */
+class TariffHistoryDaysStore(context: Context) {
+    private val file = java.io.File(context.filesDir, "tariffDays.json")
+    private val gson = com.google.gson.Gson()
+    fun save(days: com.richw.sunsynk.analysis.HistoryDays) =
+        file.bufferedWriter().use { gson.toJson(days, it) }
+    fun load(): com.richw.sunsynk.analysis.HistoryDays? = try {
+        if (file.exists()) file.bufferedReader().use {
+            gson.fromJson(it, com.richw.sunsynk.analysis.HistoryDays::class.java)
+        } else null
+    } catch (e: Exception) { null }
+}
+
 class CredentialStore(context: Context) {
     private val prefs: SharedPreferences = try {
         val masterKey = MasterKey.Builder(context)

@@ -20,6 +20,9 @@ import androidx.compose.ui.unit.dp
 import com.richw.sunsynk.TariffsUiState
 import com.richw.sunsynk.TariffsViewModel
 import com.richw.sunsynk.analysis.EvSplit
+import com.richw.sunsynk.analysis.HistPair
+import com.richw.sunsynk.analysis.HistoryResult
+import com.richw.sunsynk.analysis.TariffHistory
 import com.richw.sunsynk.analysis.ExportRow
 import com.richw.sunsynk.analysis.ImportRow
 import com.richw.sunsynk.analysis.Pair3
@@ -45,6 +48,19 @@ fun TariffsScreen(vm: TariffsViewModel) {
             contentPadding = PaddingValues(vertical = 12.dp),
         ) {
             item { ControlsCard(state, vm) }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = state.mode == "today", onClick = { vm.setMode("today") },
+                        label = { Text("Today's rates") })
+                    FilterChip(selected = state.mode == "history", onClick = { vm.setMode("history") },
+                        label = { Text("History at actual rates") })
+                }
+            }
+            if (state.mode == "history") {
+                historyItems(state, vm)
+                if (state.log.isNotEmpty()) item { LogCard(state.log) }
+                return@LazyColumn
+            }
             val profile = state.profile
             if (profile == null) {
                 item {
@@ -73,6 +89,137 @@ fun TariffsScreen(vm: TariffsViewModel) {
                 }
             }
             if (state.log.isNotEmpty()) item { LogCard(state.log) }
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.historyItems(state: TariffsUiState, vm: TariffsViewModel) {
+    item {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Every half-hour of your actual import and export from the last analysis run, priced " +
+                    "at the rate each Octopus tariff charged at that moment, against your actual tariff.",
+                    style = MaterialTheme.typography.bodySmall)
+                Button(onClick = { vm.priceHistory() }, enabled = state.historyBusy == null) {
+                    Text(if (state.history == null) "Price my history" else "Re-price")
+                }
+                state.historyBusy?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                state.historyError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                state.historyNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+    }
+    val r = state.history ?: return
+    val all = r.months
+    val last12 = TariffHistory.last12Months(all)
+    val span = if (state.historyAll || last12.isEmpty()) all else last12
+    if (span.isEmpty()) return
+    item {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(selected = span == last12, onClick = { vm.setHistoryAll(false) }, label = { Text("Last 12 full months") },
+                enabled = last12.isNotEmpty())
+            FilterChip(selected = span == all && span != last12, onClick = { vm.setHistoryAll(true) }, label = { Text("All data") })
+        }
+    }
+    val pairs = TariffHistory.bestPairs(r, span)
+    val actualNet = pairs.firstOrNull { it.isActual }?.net
+    item { SectionTitle("Import + export pairs, ${span.first()} to ${span.last()}", "net £ = import − export; tap for detail") }
+    items(pairs) { HistPairCard(it, r, span, actualNet) }
+    item { SectionTitle("Import tariffs", "house + EV + standing; EV re-timed into the cheapest night half-hours") }
+    items(r.imports.keys.sortedBy { TariffHistory.importTotals(r.imports.getValue(it), span).total }.toList()) { name ->
+        val t = TariffHistory.importTotals(r.imports.getValue(name), span)
+        val actual = TariffHistory.importTotals(r.imports.getValue(TariffHistory.ACTUAL), span).total
+        Expandable(highlight = name == TariffHistory.ACTUAL, header = {
+            Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            Column(horizontalAlignment = Alignment.End) {
+                Text(gbp(t.total), fontWeight = FontWeight.Bold)
+                Vs(t.total - actual, name == TariffHistory.ACTUAL)
+            }
+        }) {
+            Line("House", gbp(t.house))
+            Line("EV (as charged ${gbp(t.evNow)})", gbp(t.ev))
+            Line("Standing", gbp(t.standing))
+            Line("Average", "%.2fp/kWh over %,.0f kWh".format(if (t.kwh > 0) 100 * (t.house + t.ev) / t.kwh else 0.0, t.kwh))
+        }
+    }
+    item { SectionTitle("Export tariffs", "achieved p/kWh at the times you exported") }
+    items(r.exports.keys.sortedByDescending { TariffHistory.exportTotals(r.exports.getValue(it), span).income }.toList()) { name ->
+        val t = TariffHistory.exportTotals(r.exports.getValue(name), span)
+        Card(Modifier.fillMaxWidth(), colors = if (name == TariffHistory.ACTUAL_EXPORT)
+            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer) else CardDefaults.cardColors()) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Text("%,.0f kWh  %.2fp  ".format(t.kwh, t.rate), style = MaterialTheme.typography.bodySmall)
+                Text(gbp(t.income), fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+    item { HistMonthsCard(r, span) }
+}
+
+@Composable
+private fun HistPairCard(p: HistPair, r: HistoryResult, span: List<String>, actualNet: Double?) {
+    Expandable(highlight = p.isActual, header = {
+        Column(Modifier.weight(1f)) {
+            Text(p.imp, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("+ ${p.exp}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(gbp(p.net), fontWeight = FontWeight.Bold)
+            if (actualNet != null) Vs(p.net - actualNet, p.isActual) else Text("net", style = MaterialTheme.typography.labelSmall)
+        }
+    }) {
+        val i = TariffHistory.importTotals(r.imports.getValue(p.imp), span)
+        val e = TariffHistory.exportTotals(r.exports.getValue(p.exp), span)
+        Line("House", gbp(i.house))
+        Line("EV", gbp(i.ev))
+        Line("Standing", gbp(i.standing))
+        Line("Import total", gbp(i.total))
+        Line("Export", "%,.0f kWh  −%s  (%.2fp)".format(e.kwh, gbp(e.income), e.rate))
+        Line("Net", gbp(p.net))
+        r.requires[p.exp]?.let { Line("Export needs import from", it) }
+    }
+}
+
+@Composable
+private fun HistMonthsCard(r: HistoryResult, span: List<String>) {
+    val imports = r.imports.keys.toList()
+    val exports = r.exports.keys.toList()
+    fun short(n: String) = when {
+        n == TariffHistory.ACTUAL || n == TariffHistory.ACTUAL_EXPORT -> "Act"
+        n.startsWith("Intelligent") -> "IOG"
+        n.startsWith("Agile Outgoing") -> "AgOut"
+        n.startsWith("Agile") -> "Agile"
+        n.startsWith("Octopus Go") -> "Go"
+        n.startsWith("Flexible") -> "Flex"
+        n.startsWith("Outgoing") -> "Out"
+        else -> n.take(5)
+    }
+    Expandable(header = { Text("By month", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall) }) {
+        Text("Import £ (house + EV + standing)", style = MaterialTheme.typography.labelMedium)
+        MonthTableRow("Month", imports.map(::short), bold = true)
+        span.forEach { m -> MonthTableRow(m.substring(2), imports.map { n -> r.imports.getValue(n)[m]?.let { "%.0f".format(it.total) } ?: "-" }) }
+        Spacer(Modifier.height(6.dp))
+        Text("Export £ (achieved p/kWh)", style = MaterialTheme.typography.labelMedium)
+        MonthTableRow("Month", listOf("kWh") + exports.map(::short), bold = true)
+        span.forEach { m ->
+            MonthTableRow(m.substring(2), listOf("%.0f".format(r.kwh[m]?.export ?: 0.0)) +
+                exports.map { n -> r.exports.getValue(n)[m]?.let { "%.0f %.1fp".format(it.income, it.rate) } ?: "-" })
+        }
+    }
+}
+
+@Composable
+private fun MonthTableRow(label: String, cells: List<String>, bold: Boolean = false) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(label, Modifier.width(48.dp), style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal)
+        cells.forEach {
+            Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal)
         }
     }
 }
