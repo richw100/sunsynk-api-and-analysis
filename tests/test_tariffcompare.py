@@ -320,3 +320,85 @@ def test_pair_breakdown_adds_up():
     assert (b['house_off_rate'], b['house_peak_rate']) == (pytest.approx(7.0), pytest.approx(30.0))
     assert b['house_off'] + b['house_peak'] + b['ev'] + b['standing'] == pytest.approx(b['import_total'])
     assert b['export_rate'] == pytest.approx(13.0) and b['net'] == pytest.approx(imp['retimed'] - 13.0)
+
+
+# ---------------------------------------------------------------- gas
+
+EP_DUAL = ['PES region', 'Elec rate (p/kWh)', 'Elec standing (p/day)', 'Gas rate (p/kWh)',
+           'Gas standing (p/day)', 'Contract', 'Exit fee (per fuel)']
+
+
+def test_energyplus_gas_from_dual_fuel_table():
+    page = ('<h1>Fix and Fall Oct28 v5 by British Gas: regional prices</h1>'
+            + _ep_table('Electricity, Monthly Direct Debit, standard-rate: regional prices', EP_STD,
+                        [['South West England', '27.38', '56.24', '24 months', '£50']])
+            + _ep_table('Dual Fuel, Monthly Direct Debit, standard-rate: regional prices', EP_DUAL,
+                        [['South West England', '27.38', '56.24', '9.151', '28.72', '24 months', '£50']]))
+    t, _ = energyplus_tariff(page, 'fix-and-fall', 'british-gas', 'L', DEFAULTS)
+    assert t['gas']['direction'] == 'GAS'
+    assert (t['gas']['gas_rate'], t['gas']['gas_standing']) == (9.151, 28.72)
+    no_gas = page.split('<h3>Dual Fuel')[0]
+    assert energyplus_tariff(no_gas, 'fix-and-fall', 'british-gas', 'L', DEFAULTS)[0]['gas'] is None
+
+
+def test_gas_code_key_and_link_gas():
+    from analysis.tariff_sources import gas_code_key, gas_offer, link_gas
+    assert gas_code_key('NEXT_DRIVE_FIXED_GAS_V37') == 'NEXT_DRIVE_FIXED_V37'
+    assert gas_code_key('NEXT_OPTIMISE_IMPORT_GAS') == 'NEXT_OPTIMISE_IMPORT'
+    base = {'supplier': 'E.ON Next', 'source': 'x'}
+    gas = gas_offer({**base, 'name': 'Drive gas', 'code': 'NEXT_DRIVE_FIXED_GAS_V37'}, 8.8, 29.7)
+    elec = {**base, 'name': 'Drive', 'code': 'NEXT_DRIVE_FIXED_V37', 'direction': 'IMPORT', 'gas': None}
+    bundled = gas_offer({**base, 'supplier': 'Octopus', 'name': 'Flex', 'code': 'VAR'}, 7.9, 28.75)
+    octo = {'supplier': 'Octopus', 'name': 'Flex', 'code': 'VAR', 'direction': 'IMPORT', 'gas': bundled}
+    out = link_gas([elec, gas, octo])
+    assert elec['gas'] is gas
+    assert [t for t in out if t.get('direction') == 'GAS'] == [gas, bundled]   # bundled gas listed once
+    assert gas_offer(base | {'name': 'n', 'code': 'c'}, None, 30) is None
+
+
+def test_annual_gas_seasonal_weighting():
+    from analysis.tariffcompare import annual_gas
+    daily = {f'2026-{m:02d}-01': 10.0 * m for m in range(1, 13)}
+    daily['2025-01-01'] = 30.0                                  # January averages (10+30)/2 = 20/day
+    year = annual_gas(daily)
+    assert year['seasonal'] and year['monthly'][0] == pytest.approx(20 * 31)
+    assert year['kwh'] == pytest.approx(20 * 31 + sum(10.0 * m * d for m, d in
+                                                      zip(range(2, 13), (28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31))))
+    partial = annual_gas({'2026-01-01': 10.0, '2026-07-01': 2.0})
+    assert not partial['seasonal'] and partial['kwh'] == pytest.approx(365 * 6.0)
+
+
+def test_current_gas_from_bills_or_config():
+    from analysis.tariffcompare import current_gas
+    body = {'charges': [
+        {'fuel': 'Gas', 'start': '2026-08-20', 'rate': 5.124, 'standing': 34.06, 'kwh': 223.0},
+        {'fuel': 'Gas', 'start': '2026-09-20', 'rate': 5.125, 'standing': 34.07, 'kwh': 352.0},
+        {'fuel': 'Electricity', 'start': '2026-10-01', 'rate': 7.6, 'standing': 57.16, 'kwh': 414.0}]}
+    g = current_gas(body, {})
+    assert (g['code'], g['gas_rate'], g['gas_standing']) == ('CURRENT_GAS', 5.125, 34.07)
+    g = current_gas({}, {'currentGas': {'rate': 6.0, 'standingCharge': 30.0}})
+    assert (g['gas_rate'], g['gas_standing']) == (6.0, 30.0)
+    assert current_gas({}, {}) is None
+
+
+def test_compare_gas_and_overall_pick_own_or_cheapest_gas():
+    from analysis.tariff_sources import gas_offer
+    from analysis.tariffcompare import compare_gas, overall, price_gas
+    g = lambda sup, code, r, s: gas_offer({'supplier': sup, 'name': code, 'code': code, 'source': 'x'}, r, s)  # noqa: E731
+    cur = {**g('Current', 'CURRENT_GAS', 5.0, 34.0)}
+    offers = [g('A', 'A_GAS', 8.0, 30.0), g('B', 'B_GAS', 7.0, 25.0)]
+    rows = compare_gas(offers + [{'direction': 'IMPORT'}], cur, 10000.0)
+    assert [r['code'] for r in rows] == ['CURRENT_GAS', 'B_GAS', 'A_GAS']
+    assert rows[1]['gas_cost'] == pytest.approx(price_gas(offers[1], 10000.0)) == pytest.approx(700 + 91.25)
+    assert rows[1]['vs_current'] == pytest.approx(price_gas(offers[1], 10000) - price_gas(cur, 10000))
+    imp_cur = {'code': 'CURRENT', 'supplier': 'Current'}
+    exp_cur = {'code': 'CURRENT_EXPORT'}
+    imp_a = {'code': 'A1', 'supplier': 'A', 'gas': None}
+    imp_x = {'code': 'X1', 'supplier': 'X', 'gas': g('X', 'X_GAS', 6.0, 20.0)}
+    out = overall([(imp_cur, exp_cur, 500.0), (imp_a, exp_cur, 400.0), (imp_x, exp_cur, 450.0)], rows, 10000.0)
+    by = {r[0]['code']: r for r in out}
+    assert by['CURRENT'][3]['code'] == 'CURRENT_GAS' and by['CURRENT'][5] == pytest.approx(500 + 500 + 124.1)
+    assert by['A1'][3]['code'] == 'A_GAS'                          # supplier's own gas
+    assert by['A1'][5] == pytest.approx(400 + price_gas(offers[1], 10000))   # but cheapest anywhere wins
+    assert by['X1'][5] == pytest.approx(450 + price_gas(imp_x['gas'], 10000))  # its own dual-fuel gas
+    assert [r[5] for r in out] == sorted(r[5] for r in out)

@@ -82,7 +82,7 @@ DEFAULTS = {
     'energyplusSuppliers': ['british-gas', 'ovo-energy', 'scottish-power'],
     # Products that aren't a plain household import tariff, or need hardware we don't have.
     'exclude': ('EXPORT|OUTGOING|SEG|ZERO|TEST|EMPLOYEE|ENGAGE|POWER.PACK|PODPOINT|POD.POINT|'
-                'HEAT.PUMP|COSY|SNUG|FLUX|_GAS|PREPAY|PARTNER|SAMSUNG|-OEV-'),
+                'HEAT.PUMP|COSY|SNUG|FLUX|_GAS|PREPAY|PARTNER|SAMSUNG|-OEV-|OPTIMISE'),
     # Smart-charging tariffs: the supplier schedules the car, all of its energy at the cheap rate.
     'smartEvPattern': 'INTELLI|IOG',
     # Off-peak windows for Economy 7-only tariffs scraped from energyplus (name regex -> window).
@@ -101,7 +101,36 @@ DEFAULTS = {
                        'NEXT_EXPORT|NEXT_FLEX_EXPORT': 'E.ON Next',
                        'COOP-SEG-FIX': 'Co-op', 'LP-SEG-FIX': 'London Power'},
     'manualExportTariffs': [],
+    # Gas offers (Kraken products with a gas tariff, energyplus Dual Fuel rows, the Ofgem gas cap).
+    # E.ON Next Optimise needs solar panels *and* a home battery.
+    'gasExclude': ('EXPORT|OUTGOING|SEG|ZERO|TEST|EMPLOYEE|ENGAGE|POWER.PACK|HEAT.PUMP|COSY|SNUG|FLUX|'
+                   'PREPAY|PARTNER|OPTIMISE'),
+    'manualGasTariffs': [],
 }
+
+
+def gas_code_key(code: str) -> str:
+    """Product code with its gas marker removed, so E.ON's NEXT_DRIVE_FIXED_GAS_V37 matches the
+    electricity product NEXT_DRIVE_FIXED_V37."""
+    return re.sub(r'(?i)[-_]GAS(?=[-_]|$)', '', code)
+
+
+def gas_offer(base: dict, rate, standing, note: str = '') -> dict | None:
+    """A gas tariff dict (direction GAS: p/kWh and p/day inc VAT), or None if unreadable."""
+    if rate is None or standing is None:
+        return None
+    return {'supplier': base['supplier'], 'name': base['name'], 'code': base['code'],
+            'source': base['source'], 'kind': base.get('kind', ''), 'direction': 'GAS',
+            'gas_rate': float(rate), 'gas_standing': float(standing), 'note': note}
+
+
+def _kraken_gas(detail: dict, region: str):
+    """(rate, standing) of a Kraken product's Direct Debit (or 'varying') gas tariff."""
+    by_payment = (detail.get('single_register_gas_tariffs') or {}).get(f'_{region}') or {}
+    t = by_payment.get('direct_debit_monthly') or by_payment.get('varying')
+    if not t:
+        return None, None
+    return t.get('standard_unit_rate_inc_vat'), t.get('standing_charge_inc_vat')
 
 
 class SourceError(Exception):
@@ -273,6 +302,7 @@ async def _kraken_product(fetcher: Fetcher, host: str, product: dict, region: st
         'direction': 'IMPORT',
         'description': re.sub(r'\s+', ' ', detail.get('description') or '').strip(),
     }
+    result['gas'] = gas_offer(result, *_kraken_gas(detail, region))
     single = ((detail.get('single_register_electricity_tariffs') or {})
               .get(f'_{region}', {}).get('direct_debit_monthly'))
     if single:
@@ -300,6 +330,42 @@ async def _kraken_product(fetcher: Fetcher, host: str, product: dict, region: st
                 'ev_rate': float(ev_off) if ev_off is not None else None,
                 'note': f'off-peak {window} (from description); smart-charged EV at its EV rate'}
     return None                      # gas-only, Economy 7 meters only, or not sold in this region
+
+
+async def kraken_gas_offers(fetcher: Fetcher, host: str, region: str, cfg: dict) -> list:  # pylint: disable=too-many-locals
+    """Current gas tariffs from one Kraken host: the newest version of every product family
+    (gas-only products included) with a Direct Debit gas tariff for the region."""
+    products, url = [], f'{host}/v1/products/'
+    params = {'page_size': 500}
+    while url:
+        page = await fetcher.get_json(url, params)
+        products += page['results']
+        url, params = page.get('next'), None
+    exclude = re.compile(cfg['gasExclude'], re.I)
+    latest = {}
+    for p in products:
+        if p.get('is_business') or p.get('is_prepay') or _is_export(p):
+            continue
+        if exclude.search(p['code']) or exclude.search(p['full_name'] or ''):
+            continue
+        fam = (p.get('brand'), family_key(p['code']))
+        if fam not in latest or (p['available_from'] or '') > (latest[fam]['available_from'] or ''):
+            latest[fam] = p
+    details = await asyncio.gather(*(fetcher.get_json(f"{host}/v1/products/{p['code']}/")
+                                     for p in latest.values()), return_exceptions=True)
+    offers = []
+    for p, detail in zip(latest.values(), details):
+        if isinstance(detail, Exception):
+            continue
+        term = p.get('term')
+        base = {'supplier': BRANDS.get(p.get('brand') or '', HOST_SUPPLIER.get(host, host)),
+                'name': detail.get('display_name') or p['display_name'], 'code': p['code'],
+                'source': host.split('//')[-1],
+                'kind': 'variable' if p.get('is_variable') else (f'fixed {term}m' if term else 'fixed')}
+        offer = gas_offer(base, *_kraken_gas(detail, region))
+        if offer:
+            offers.append(offer)
+    return offers
 
 
 def _window_from_text(text: str):
@@ -391,6 +457,13 @@ def energyplus_tariff(page: str, slug: str, supplier_slug: str, region: str, cfg
 
     std = find('standard-rate')
     e7 = None if std else find('Economy 7')
+    gas_row = None
+    for t, rows in tables.items():
+        if t.startswith('Dual Fuel, Monthly Direct Debit') and rows:
+            gas_row = _region_row(rows[1:], names)
+            if gas_row:
+                gas_row = dict(zip(rows[0], gas_row))
+                break
     base = {'supplier': supplier, 'name': name, 'code': slug, 'source': 'energyplus.co.uk',
             'smart_ev': False, 'ev_rate': None, 'note': '', 'direction': 'IMPORT'}
     row = std or e7
@@ -403,6 +476,8 @@ def energyplus_tariff(page: str, slug: str, supplier_slug: str, region: str, cfg
                     'variable' if 'variable' in lname else
                     f'fixed {int(months)}m' if months else 'fixed')
     base['standing'] = _num(row.get('Elec standing (p/day)', ''))
+    base['gas'] = gas_offer(base, _num(gas_row.get('Gas rate (p/kWh)', '')),
+                            _num(gas_row.get('Gas standing (p/day)', ''))) if gas_row else None
     peak = _num(row.get('Elec rate (p/kWh)', ''))
     if peak is None or base['standing'] is None:
         return None, f'unreadable row {row}'
@@ -486,13 +561,21 @@ def price_cap_tariff(rows: list, region: str):
 
 
 async def ofgem_cap_tariff(fetcher: Fetcher, region: str):
+    """The electricity price-cap tariff, with the gas cap (Direct Debit) as its ``gas``."""
     page = await fetcher.get_text(OFGEM_CAP_URL)
+    elec, gas_rows = None, None
     for widget in sorted(set(re.findall(r'everviz\.com/inject/([A-Za-z0-9_-]+)', page))):
         title, rows = parse_everviz_table(await fetcher.get_text(EVERVIZ_INJECT.format(id=widget)))
         t = title.lower()
         if t.startswith('electricity') and 'direct debit' in t and 'single rate' in t and rows:
-            return price_cap_tariff(rows, region)
-    raise SourceError('Direct Debit single-rate electricity table not found on the Ofgem page')
+            elec = price_cap_tariff(rows, region)
+        elif t.startswith('gas') and 'direct debit' in t and rows:
+            gas_rows = rows
+    if elec is None:
+        raise SourceError('Direct Debit single-rate electricity table not found on the Ofgem page')
+    gas = price_cap_tariff(gas_rows, region) if gas_rows else None
+    elec['gas'] = gas_offer(elec, gas['slot_rates'][0], gas['standing']) if gas else None
+    return elec
 
 
 # ---------------------------------------------------------------- OVO Charge Anytime
@@ -506,6 +589,32 @@ def parse_charge_anytime_rate(page: str):
 
 
 # ---------------------------------------------------------------- manual entries
+
+def manual_gas_tariff(entry: dict) -> dict:
+    """A config entry {supplier, name, rate, standingCharge [, kind, note]} (p/kWh, p/day)."""
+    base = {'supplier': entry.get('supplier', 'Manual'), 'name': entry.get('name', 'Manual gas'),
+            'code': entry.get('code', 'MANUAL_GAS'), 'source': 'config', 'kind': entry.get('kind', '')}
+    return gas_offer(base, entry['rate'], entry['standingCharge'], entry.get('note', ''))
+
+
+def link_gas(tariffs: list) -> list:
+    """Gas offers for every import tariff's bundled gas (as GAS tariffs, de-duplicated), and
+    each import tariff's ``gas`` filled from a separate gas product of the same supplier with
+    the same code (E.ON publishes NEXT_DRIVE_FIXED_GAS_V37 beside NEXT_DRIVE_FIXED_V37)."""
+    gas = [t for t in tariffs if t.get('direction') == 'GAS']
+    by_key = {(g['supplier'], gas_code_key(g['code'])): g for g in gas}
+    for t in tariffs:
+        if t.get('direction', 'IMPORT') == 'IMPORT' and not t.get('gas'):
+            t['gas'] = by_key.get((t['supplier'], gas_code_key(t['code'])))
+    seen = {(g['supplier'], g['code']) for g in gas}
+    extra = []
+    for t in tariffs:
+        g = t.get('gas') if t.get('direction', 'IMPORT') == 'IMPORT' else None
+        if g and (g['supplier'], g['code']) not in seen and not t['code'].endswith('+CA'):
+            seen.add((g['supplier'], g['code']))
+            extra.append(g)
+    return tariffs + extra
+
 
 def manual_tariff(entry: dict, direction: str = 'IMPORT') -> dict:
     """A config entry {supplier, name, peakRate, standingCharge [, offpeakRate, offpeakWindow,
@@ -525,6 +634,9 @@ def manual_tariff(entry: dict, direction: str = 'IMPORT') -> dict:
         'note': entry.get('note', ''),
         'direction': direction,
         'requires': entry.get('requires'),
+        'gas': gas_offer({'supplier': entry.get('supplier', 'Manual'), 'name': entry.get('name', 'Manual tariff'),
+                          'code': entry.get('code', 'MANUAL'), 'source': 'config'},
+                         entry.get('gasRate'), entry.get('gasStandingCharge')),
     }
 
 
@@ -548,6 +660,7 @@ async def fetch_all(cfg: dict, today: date | None = None) -> tuple:
                 try:
                     tariffs += await kraken_tariffs(fetcher, host, region, cfg, today)
                     tariffs += await kraken_tariffs(fetcher, host, region, cfg, today, 'EXPORT')
+                    tariffs += await kraken_gas_offers(fetcher, host, region, cfg)
                 except (SourceError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                     print(f'  [source failed] {name}: {e}')
         if 'energyplus' in sources:
@@ -568,7 +681,8 @@ async def fetch_all(cfg: dict, today: date | None = None) -> tuple:
                 rate = parse_charge_anytime_rate(await fetcher.get_text(OVO_CHARGE_ANYTIME_URL))
                 if rate is None:
                     raise SourceError('rate not found on the page')
-                ovo = [t for t in tariffs if t['supplier'].lower().startswith('ovo')]
+                ovo = [t for t in tariffs if t['supplier'].lower().startswith('ovo')
+                       and t.get('direction', 'IMPORT') == 'IMPORT']
                 bases = [min(ovo, key=lambda t: t['slot_rates'][0] * 3000 + t['standing'] * 365)] if ovo else []
                 if cap:
                     bases.append({**cap, 'supplier': 'OVO', 'name': 'Standard variable (cap)',
@@ -581,4 +695,5 @@ async def fetch_all(cfg: dict, today: date | None = None) -> tuple:
                 print(f'  [source failed] OVO Charge Anytime: {e}')
     tariffs += [manual_tariff(e) for e in cfg.get('manualTariffs') or []]
     tariffs += [manual_tariff(e, 'EXPORT') for e in cfg.get('manualExportTariffs') or []]
-    return tariffs, {'calls': fetcher.calls, 'hits': fetcher.hits}
+    tariffs += [manual_gas_tariff(e) for e in cfg.get('manualGasTariffs') or []]
+    return link_gas(tariffs), {'calls': fetcher.calls, 'hits': fetcher.hits}

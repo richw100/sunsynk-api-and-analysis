@@ -13,6 +13,13 @@ Import - each tariff's cost split into house energy, EV energy and a year of sta
                    cheapest rate (you'd re-schedule the charger); on smart-charging tariffs
                    (Intelligent Octopus Go, OVO Charge Anytime) all EV import gets the EV rate
   Total = house + the cheaper EV figure + standing charge.
+Gas - a seasonally weighted year of gas (each calendar month's average day from the E.ON
+  Next half-hourly meter cache, eondata.py, x the month's length) priced at every gas offer
+  (unit rate x kWh + a year of standing charge): Kraken products with a gas tariff, energyplus
+  Dual Fuel rows, the Ofgem gas cap, manualGasTariffs; the current gas tariff is the latest
+  billed E.ON rate (eonData/tariffs.json) or tariffCompare.currentGas {rate, standingCharge}.
+  OVERALL ranks import + gas - export: each pair with its own/same-supplier gas and with the
+  cheapest gas anywhere (gas can come from a different supplier).
 Export - the projected year of export per half-hour (SlotProjection, seasonal) priced at each
   export tariff (Kraken export products, the current energyPrices export rate, and
   manualExportTariffs), then the best import + export pairs, honouring same-supplier
@@ -44,6 +51,7 @@ from analysis.energyprices import EnergyPrices
 from analysis.pricedata import PriceData
 from analysis.projection import SlotProjection, latest_rates
 from analysis import tariff_sources
+from analysis.eon_client import load_daily_kwh, load_tariffs
 from analysis.tariff_sources import DEFAULTS as TARIFF_DEFAULTS, tou_slot_rates, window_slots
 
 LOCAL_CONFIG = 'config.local.json'
@@ -226,6 +234,128 @@ def best_pairs(import_rows: list, export_rows: list, n: int = 10) -> list:
     return best
 
 
+DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def annual_gas(daily: dict) -> dict:
+    """A seasonally weighted gas year from ``{'YYYY-MM-DD': kWh}``: each calendar month's
+    average day (over every year seen) x its length. ``seasonal`` is False (and the year is
+    365 x the overall daily average) until all 12 months have data."""
+    by_month = {}
+    for day, kwh in daily.items():
+        by_month.setdefault(int(day[5:7]) - 1, []).append(kwh)
+    monthly = {m: sum(v) / len(v) * DAYS_IN_MONTH[m] for m, v in by_month.items()}
+    seasonal = len(monthly) == 12
+    days = sum(len(v) for v in by_month.values())
+    kwh = sum(monthly.values()) if seasonal else (365 * sum(daily.values()) / days if days else 0.0)
+    return {'kwh': kwh, 'monthly': monthly, 'seasonal': seasonal, 'days': days}
+
+
+def current_gas(tariffs_body: dict, cfg: dict) -> dict | None:
+    """The current gas tariff: the newest billed E.ON gas charge (VAT-inclusive p/kWh and
+    p/day from eonData/tariffs.json), else tariffCompare.currentGas {rate, standingCharge}."""
+    bills = [c for c in (tariffs_body or {}).get('charges') or []
+             if (c.get('fuel') or '').lower() == 'gas' and c.get('rate') and c.get('kwh')]
+    base = {'supplier': 'Current', 'code': 'CURRENT_GAS', 'source': 'config', 'kind': ''}
+    if bills:
+        last = max(bills, key=lambda c: c['start'])
+        return tariff_sources.gas_offer({**base, 'name': f"gas billed from {last['start']}",
+                                         'source': 'eonData'}, last['rate'], last['standing'])
+    manual = cfg.get('currentGas')
+    if manual:
+        return tariff_sources.gas_offer({**base, 'name': 'gas (config)'}, manual['rate'],
+                                        manual['standingCharge'])
+    return None
+
+
+def price_gas(gas: dict, kwh: float) -> float:
+    """£ for a year: kWh at the unit rate plus 365 days of standing charge."""
+    return (kwh * gas['gas_rate'] + 365 * gas['gas_standing']) / 100
+
+
+def compare_gas(tariffs: list, current: dict | None, kwh: float) -> list:
+    """Priced gas rows, cheapest first."""
+    offers = ([current] if current else []) + [t for t in tariffs if t.get('direction') == 'GAS']
+    base = price_gas(current, kwh) if current else None
+    rows = [{**g, 'gas_cost': price_gas(g, kwh),
+             'vs_current': price_gas(g, kwh) - base if base is not None else 0.0} for g in offers]
+    rows.sort(key=lambda r: r['gas_cost'])
+    return rows
+
+
+def overall(pairs: list, gas_rows: list, kwh: float) -> list:
+    """Every import + export pair with gas: ``own`` = the import tariff's own gas (dual fuel /
+    matching gas product), else its supplier's cheapest gas, (the current pair keeps the
+    current gas); ``any`` = the cheapest gas offer from any supplier. Rows (imp, exp, elec net,
+    own gas row or None, any gas row, best total), cheapest best total first."""
+    market = [g for g in gas_rows if g['code'] != 'CURRENT_GAS']
+    cheapest = market[0] if market else None
+    current = next((g for g in gas_rows if g['code'] == 'CURRENT_GAS'), None)
+    out = []
+    for imp, exp, net in pairs:
+        if imp['code'] == 'CURRENT':
+            own = current
+        elif imp.get('gas'):
+            own = {**imp['gas'], 'gas_cost': price_gas(imp['gas'], kwh)}
+        else:
+            own = next((g for g in market if g['supplier'] == imp['supplier']), None)
+        options = [g for g in (own, cheapest) if g]
+        if not options:
+            continue
+        out.append((imp, exp, net, own, cheapest, net + min(g['gas_cost'] for g in options)))
+    out.sort(key=lambda r: r[5])
+    return out
+
+
+def print_gas(gas_year: dict, rows: list, top: int = 0):
+    """PROJECTED GAS and GAS TARIFFS."""
+    print('')
+    note = '' if gas_year['seasonal'] else '  (provisional: not all 12 months seen yet)'
+    print(f"PROJECTED GAS  {gas_year['kwh']:,.0f} kWh/year from {gas_year['days']} days of E.ON meter data{note}")
+    names = 'J F M A M J J A S O N D'.split()
+    print('  ' + ' '.join(f'{n:>6}' for n in names))
+    print('  ' + ' '.join(f"{gas_year['monthly'][m]:6.0f}" if m in gas_year['monthly'] else f"{'-':>6}"
+                          for m in range(12)) + '  kWh')
+    print('')
+    print('GAS TARIFFS  (£/year = kWh x unit rate + 365 x standing charge)')
+    head = (f"  {'#':>3} {'Supplier':<18} {'Tariff':<40} {'Kind':<10} {'p/kWh':>7} {'p/day':>7}"
+            f" {'£/year':>8} {'vs curr':>8}")
+    print(head)
+    print('  ' + '-' * (len(head) - 2))
+    shown = rows[:top] + [r for r in rows[top:] if r['code'] == 'CURRENT_GAS'] if top else rows
+    for r in shown:
+        print(f"  {rows.index(r) + 1:>3} {_short(r['supplier'], 18):<18} {_short(r['name'], 40):<40}"
+              f" {_short(r.get('kind') or '', 10):<10} {r['gas_rate']:7.3f} {r['gas_standing']:7.2f}"
+              f" {r['gas_cost']:8.2f} {r['vs_current']:+8.2f}"
+              + ('   <== current' if r['code'] == 'CURRENT_GAS' else ''))
+
+
+def print_overall(rows: list, n: int = 15):  # pylint: disable=too-many-locals
+    """OVERALL: electricity import + gas - export, the cheapest ``n`` (plus the current)."""
+    if not rows:
+        return
+    base = next((r[5] for r in rows if r[0]['code'] == 'CURRENT' and r[1]['code'] == 'CURRENT_EXPORT'), None)
+    shown = rows[:n] + [r for r in rows[n:] if r[0]['code'] == 'CURRENT']
+    print('')
+    print('OVERALL  (£/year = electricity import + gas - export; gas "own" = the tariff\'s own or'
+          ' its supplier\'s gas, "any" = cheapest gas anywhere)')
+    head = f"  {'Import + export':<62} {'Elec net':>9} {'Gas own':>9} {'Gas any':>9} {'Total':>9} {'vs curr':>8}"
+    print(head)
+    print('  ' + '-' * (len(head) - 2))
+    for imp, exp, net, own, any_gas, total in shown:
+        label = _short(f"{imp['supplier']} {imp['name']} + {exp['supplier']} {exp['name']}", 62)
+        vs = f'{total - base:+8.2f}' if base is not None else ''
+        own_s = f"{own['gas_cost']:9.2f}" if own else f"{'-':>9}"
+        any_s = f"{any_gas['gas_cost']:9.2f}" if any_gas and imp['code'] != 'CURRENT' else f"{'-':>9}"
+        print(f"  {label:<62} {net:9.2f} {own_s} {any_s} {total:9.2f} {vs:>8}"
+              + ('   <== current' if imp['code'] == 'CURRENT' else ''))
+    cheapest = next((r[4] for r in rows if r[4]), None)
+    if cheapest:
+        print(f"  Cheapest gas anywhere: {cheapest['supplier']} {cheapest['name']}"
+              f" ({cheapest['gas_rate']:.2f}p/kWh, {cheapest['gas_standing']:.2f}p/day)")
+    print('  "own" gas: the same product\'s gas tariff (dual fuel), else the supplier\'s cheapest gas offer.')
+
+
 def _short(text: str, width: int) -> str:
     return text if len(text) <= width else text[:width - 1] + '…'
 
@@ -384,7 +514,8 @@ def write_csv(rows: list, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = ['direction', 'supplier', 'name', 'code', 'kind', 'rate_type', 'rates_text', 'standing',
               'house_cost', 'ev_now', 'ev_retimed', 'ev_p_per_kwh', 'standing_year', 'retimed',
-              'income', 'vs_current', 'cheap_kwh', 'smart_ev', 'ev_rate', 'requires', 'source', 'note']
+              'income', 'gas_rate', 'gas_standing', 'gas_cost', 'vs_current', 'cheap_kwh', 'smart_ev',
+              'ev_rate', 'requires', 'source', 'note']
     with open(path, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
         w.writeheader()
@@ -447,9 +578,21 @@ async def main():  # pylint: disable=too-many-locals
     print_pairs(pairs)
     print_pair_details(pairs, house, ev, export)
 
+    gas_rows = []
+    gas_daily = load_daily_kwh(cfg.get('eonDataDir', 'eonData'), 'gas')
+    if gas_daily:
+        gas_year = annual_gas(gas_daily)
+        gas_rows = compare_gas(tariffs, current_gas(load_tariffs(cfg.get('eonDataDir', 'eonData')), cfg),
+                               gas_year['kwh'])
+        print_gas(gas_year, gas_rows, cfg['top'])
+        all_pairs = best_pairs(rows, export_rows, n=len(rows) * len(export_rows))
+        print_overall(overall(all_pairs, gas_rows, gas_year['kwh']))
+    else:
+        print('\nNo gas data (run analysis/eondata.py to download the E.ON meter readings).')
+
     path = os.path.join(PROJECT_ROOT, 'results',
                         f"_{datetime.now().strftime('%Y%m%d-%H%M%S')}-tariffs-{cfg['region']}.csv")
-    write_csv(rows + export_rows, path)
+    write_csv(rows + export_rows + gas_rows, path)
     print(f'\nCSV: {path}')
 
 
