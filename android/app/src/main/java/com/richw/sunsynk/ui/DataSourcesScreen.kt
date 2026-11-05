@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.KeyboardType
@@ -66,8 +67,8 @@ private fun SourceCard(title: String, subtitle: String, ui: SourceUi, content: @
 
 @Composable
 private fun FuseCard(vm: DataSourcesViewModel, ui: SourceUi) {
-    var phone by remember { mutableStateOf(vm.fusePhone) }
-    var code by remember { mutableStateOf("") }
+    var phone by rememberSaveable { mutableStateOf(vm.fusePhone) }
+    var code by rememberSaveable { mutableStateOf("") }
     SourceCard(
         "Fuse Energy — export meter",
         "Your SEG supplier's smart-meter export, compared with the inverter's export estimate.",
@@ -101,8 +102,8 @@ private fun FuseCard(vm: DataSourcesViewModel, ui: SourceUi) {
 
 @Composable
 private fun IndraCard(vm: DataSourcesViewModel, ui: SourceUi) {
-    var email by remember { mutableStateOf(vm.indraEmail) }
-    var link by remember { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf(vm.indraEmail) }
+    var link by rememberSaveable { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
     SourceCard(
         "Indra — EV charger",

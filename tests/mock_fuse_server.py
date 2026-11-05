@@ -79,6 +79,12 @@ class MockFuseServer:
     async def phone_sign_in(self, request):
         self.calls['phoneSignIn'] += 1
         body = await request.json()
+        if 'supplyCountry' not in body:        # the real server's HTTP 500 since Nov 2026
+            return web.json_response({'error': {'code': 500, 'message': 'Internal server error', 'data': {}}},
+                                     status=500)
+        if body['phone'] != PHONE:
+            return self._result({'error': {'errorCode': 'incorrect_phone_number', '__serverToClient': True,
+                                           '__additionalErrors': [{'errorCode': 'incorrect_email_address'}]}})
         resp = self._result({'challenge_type': 'PHONE_OTP', 'auth_flow_token': None,
                              'data': {'phone_number': body['phone']}})
         resp.set_cookie('session_id', 'sess-1')

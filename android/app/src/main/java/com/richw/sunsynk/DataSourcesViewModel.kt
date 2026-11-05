@@ -47,9 +47,23 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
     val fusePhone get() = store.fusePhone
     val indraEmail get() = store.indraSession.email
 
+    // The SMS code is tied to the phoneSignIn cookies (session_id + otp), so verify on the same
+    // client; the cookies are also saved (store.fusePending) in case Android kills the app while
+    // the user fetches the code from their messages.
+    private var pendingFuse: FuseClient? = null
+
     init {
+        val pending = store.fusePending?.takeIf { System.currentTimeMillis() - it.second < FUSE_OTP_LIFETIME_MS }
+        if (pending != null) {
+            pendingFuse = FuseClient(store.fuseDir, pending.first, onCookies = { store.fuseCookies = it })
+        } else store.fusePending = null
         _fuse.value = SourceUi(
-            step = if (store.fuseCookies.containsKey("app-auth")) SignInStep.SIGNED_IN else SignInStep.SIGNED_OUT,
+            step = when {
+                pending != null -> SignInStep.AWAITING_CONFIRMATION
+                store.fuseCookies.containsKey("app-auth") -> SignInStep.SIGNED_IN
+                else -> SignInStep.SIGNED_OUT
+            },
+            message = if (pending != null) "Enter the code Fuse texted to ${store.fusePhone}" else "",
             summary = fuseSummary(),
         )
         val s = store.indraSession
@@ -165,15 +179,27 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
 
     // ── Fuse ──────────────────────────────────────────────────────────────────
 
-    // The SMS code is tied to the phoneSignIn cookies, so verify on the same client.
-    private var pendingFuse: FuseClient? = null
+
+    companion object {
+        const val FUSE_OTP_LIFETIME_MS = 10 * 60 * 1000L     // Fuse's otp cookie lasts 10 minutes
+    }
 
     fun fuseSendCode(phone: String) = run(_fuse) {
         val number = FuseClient.normalisePhone(phone)
         store.fusePhone = number
         val client = FuseClient(store.fuseDir, onCookies = { store.fuseCookies = it })
-        client.startSignIn(number)
+        try {
+            client.startSignIn(number)
+        } catch (e: FuseAuthException) {
+            if ("premature_retry" !in (e.message ?: "")) throw e
+            // Fuse refuses a new code too soon after the last one: keep waiting for that one.
+            return@run _fuse.value.copy(busy = false,
+                step = if (pendingFuse != null) SignInStep.AWAITING_CONFIRMATION else _fuse.value.step,
+                error = "Fuse sent a code a moment ago and won't send another yet — enter that code" +
+                    (if (pendingFuse == null) " after asking again in a minute or two" else ""))
+        }
         pendingFuse = client
+        store.fusePending = Pair(client.currentCookies(), System.currentTimeMillis())
         _fuse.value.copy(busy = false, step = SignInStep.AWAITING_CONFIRMATION, message = "Code sent by SMS to $number")
     }
 
@@ -181,6 +207,7 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
         val client = pendingFuse ?: throw FuseAuthException("Send a code first")
         client.verifyOtp(code.trim())
         pendingFuse = null
+        store.fusePending = null
         _fuse.value.copy(busy = false, step = SignInStep.SIGNED_IN, message = "Signed in to Fuse")
     }
 

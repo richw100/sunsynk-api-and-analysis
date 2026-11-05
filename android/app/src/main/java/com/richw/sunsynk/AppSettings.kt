@@ -501,6 +501,23 @@ class DataSourceStore(private val context: Context) {
         }
         set(v) = prefs.edit().putString("fuse_cookies", Gson().toJson(v)).apply()
 
+    /** A Fuse sign-in waiting for its SMS code (phoneSignIn's session_id + otp cookies and when it
+     *  was sent), so the code can still be entered if Android kills the app meanwhile. */
+    var fusePending: Pair<Map<String, String>, Long>?
+        get() {
+            val raw = prefs.getString("fuse_pending", null) ?: return null
+            return runCatching {
+                val o = JsonParser.parseString(raw).asJsonObject
+                Pair(o.getAsJsonObject("cookies").entrySet().associate { it.key to it.value.asString }, o.get("at").asLong)
+            }.getOrNull()
+        }
+        set(v) = prefs.edit().apply {
+            if (v == null) remove("fuse_pending")
+            else putString("fuse_pending", com.google.gson.JsonObject().apply {
+                add("cookies", Gson().toJsonTree(v.first)); addProperty("at", v.second)
+            }.toString())
+        }.apply()
+
     var indraSession: com.richw.sunsynk.api.IndraSession
         get() = com.richw.sunsynk.api.IndraSession(
             email = prefs.getString("indra_email", "") ?: "",

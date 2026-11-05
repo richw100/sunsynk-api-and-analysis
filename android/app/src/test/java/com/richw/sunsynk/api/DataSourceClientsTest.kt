@@ -95,4 +95,13 @@ class DataSourceClientsTest {
         assertEquals("+447700900123", FuseClient.normalisePhone("+44 7700-900123"))
         assertEquals("+447700900123", FuseClient.normalisePhone("00447700900123"))
     }
+
+    @Test
+    fun phoneSignInPayloadCarriesANullSupplyCountry() {
+        // Fuse answers HTTP 500 unless supplyCountry is present (as null), so it must survive toString().
+        val body = com.google.gson.JsonObject().apply {
+            addProperty("phone", "+447700900000"); add("supplyCountry", com.google.gson.JsonNull.INSTANCE)
+        }
+        assertEquals("{\"phone\":\"+447700900000\",\"supplyCountry\":null}", body.toString())
+    }
 }

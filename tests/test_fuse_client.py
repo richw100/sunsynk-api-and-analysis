@@ -243,3 +243,12 @@ def test_load_hourly_export_kwh(tmp_path):
         ({'hour': 14}, 5.0, 'FORECASTED')])
     assert load_hourly_export_kwh(str(tmp_path), '2026-10-01') == [(12, 1.25), (13, 2.0)]
     assert load_hourly_export_kwh(str(tmp_path), '2026-10-02') == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_phone_reports_fuse_error_code(aiohttp_server, tmp_path):
+    server = MockFuseServer(aiohttp_server)
+    base_url = await server.base_url()
+    async with _client(base_url, tmp_path, _no_otp, phone='+447700900000') as client:
+        with pytest.raises(FuseAuthError, match='incorrect_phone_number'):
+            await client.login()

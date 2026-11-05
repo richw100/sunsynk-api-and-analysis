@@ -35,7 +35,7 @@ class FuseClient(
     private val today: LocalDate = LocalDate.now(),
 ) {
     companion object {
-        const val APP_VERSION = "0.5.390"
+        const val APP_VERSION = "0.5.416"
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         const val FINAL_GRACE_DAYS = 14L
@@ -176,14 +176,31 @@ class FuseClient(
     /** Ask Fuse to text a sign-in code to [phone] (e.g. +447...). */
     suspend fun startSignIn(phone: String) {
         jar.clear()
-        val body = post("phoneSignIn", JsonObject().apply { addProperty("phone", normalisePhone(phone)) })
+        // The web app sends supplyCountry (null); without it phoneSignIn is an HTTP 500 (Nov 2026).
+        val body = post("phoneSignIn", JsonObject().apply {
+            addProperty("phone", normalisePhone(phone)); add("supplyCountry", com.google.gson.JsonNull.INSTANCE)
+        })
+        fuseError(body)?.let { throw FuseAuthException("Fuse rejected the sign-in: $it") }
         val challenge = body.get("challenge_type")?.asString
         if (challenge != "PHONE_OTP") throw FuseAuthException("Unexpected phoneSignIn challenge: $challenge")
     }
 
+    /** "incorrect_phone_number (+ incorrect_email_address)" from a tRPC result's error object, or null. */
+    private fun fuseError(body: JsonObject): String? {
+        val err = body.getAsJsonObject("error") ?: return null
+        val codes = listOfNotNull(err.get("errorCode")?.asString) +
+            (err.getAsJsonArray("__additionalErrors")?.mapNotNull { it.asJsonObject.get("errorCode")?.asString } ?: emptyList())
+        return if (codes.isEmpty()) err.toString().take(200)
+        else codes.first() + (if (codes.size > 1) " (+ ${codes.drop(1).joinToString()})" else "")
+    }
+
+    /** The cookies so far (after [startSignIn]: session_id + otp), to resume a sign-in later. */
+    fun currentCookies(): Map<String, String> = jar.toMap()
+
     /** Complete sign-in with the SMS [code]; persists the session cookies via onCookies. */
     suspend fun verifyOtp(code: String) {
         val body = post("verifyOtp", JsonObject().apply { addProperty("code", code) })
+        fuseError(body)?.let { throw FuseAuthException("Code not accepted: $it") }
         val challenge = body.get("challenge_type")?.asString
         if (challenge != "AUTHORIZED") throw FuseAuthException("Code not accepted (challenge_type=$challenge)")
         onCookies(jar.filterKeys { it in PERSISTED })

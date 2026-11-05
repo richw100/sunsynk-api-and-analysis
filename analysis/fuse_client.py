@@ -17,7 +17,7 @@ import aiohttp
 from yarl import URL
 
 BASE_URL = 'https://www.fuseenergy.com'
-APP_VERSION = '0.5.390'
+APP_VERSION = '0.5.416'
 USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36')
 SESSION_FILE = '.session.json'
@@ -26,6 +26,14 @@ SESSION_FILE = '.session.json'
 FINAL_GRACE_DAYS = 14
 
 _PREMISES_RE = re.compile(r'"premises":\{"id":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"')
+
+
+def fuse_error(body: dict) -> str:
+    """'incorrect_phone_number (+ incorrect_email_address)' from a tRPC result's error object."""
+    err = body.get('error') or {}
+    codes = [err.get('errorCode')] + [e.get('errorCode') for e in err.get('__additionalErrors') or []]
+    codes = [c for c in codes if c]
+    return codes[0] + (f" (+ {', '.join(codes[1:])})" if codes[1:] else '') if codes else str(err)[:200]
 
 
 class FuseAuthError(Exception):
@@ -171,11 +179,16 @@ class FuseEnergyClient:
         if not self.phone:
             self.phone = input('Enter Fuse phone number (e.g. +447...): ').strip()
         self._session.cookie_jar.clear()
-        body = await self._trpc_post('phoneSignIn', {'phone': self.phone})
+        # The web app sends supplyCountry (null); without it phoneSignIn is an HTTP 500 (Nov 2026).
+        body = await self._trpc_post('phoneSignIn', {'phone': self.phone, 'supplyCountry': None})
+        if body.get('error'):
+            raise FuseAuthError(f"Fuse rejected the sign-in: {fuse_error(body)}")
         if body.get('challenge_type') != 'PHONE_OTP':
             raise FuseAuthError(f'Unexpected phoneSignIn challenge: {body.get("challenge_type")}')
         code = self._otp_provider()
         body = await self._trpc_post('verifyOtp', {'code': code})
+        if body.get('error'):
+            raise FuseAuthError(f"Code not accepted: {fuse_error(body)}")
         if body.get('challenge_type') != 'AUTHORIZED':
             raise FuseAuthError(f'OTP not accepted (challenge_type={body.get("challenge_type")})')
         self._save_session()
