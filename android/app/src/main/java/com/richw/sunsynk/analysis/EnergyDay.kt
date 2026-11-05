@@ -154,6 +154,9 @@ class EnergyDay(
     var evFromPv = 0.0
         private set
     private var batteryGrid: IntervalSummary? = null
+    /** Gap-filled net Grid records with EV added, and the EV draw by time (for half-hour slots). */
+    private var gridRecords: List<Pair<LocalTime, Double>> = emptyList()
+    private var evByTime: Map<LocalTime, Double> = emptyMap()
     val suppliedLoad: Double
     val suppliedImport: Double
     val suppliedPv: Double
@@ -179,6 +182,7 @@ class EnergyDay(
             return (records.map { (t, w) -> Pair(t, w + (ev[t] ?: 0.0)) } +
                 ev.filterKeys { it !in seen }.map { (t, w) -> Pair(t, w) }).sortedBy { it.first }
         }
+        evByTime = ev
         this.ev = IntervalSummary("EV", ev.entries.sortedBy { it.key }.map { Pair(it.key, it.value) },
             null, offPeakStart, offPeakStop)
 
@@ -193,7 +197,8 @@ class EnergyDay(
                 "PV" -> pvTmp = IntervalSummary("PV", records, battery, offPeakStart, offPeakStop)
                 "Grid" -> {
                     evFromPv = records.sumOf { (t, w) -> minOf(ev[t] ?: 0.0, maxOf(0.0, -w)) } / 12.0
-                    gridTmp = IntervalSummary("Grid", addEv(records), if (ev.isEmpty()) battery else null,
+                    gridRecords = addEv(records)
+                    gridTmp = IntervalSummary("Grid", gridRecords, if (ev.isEmpty()) battery else null,
                         offPeakStart, offPeakStop, isLoad = true, correction = exportCorrection)
                     if (ev.isNotEmpty()) batteryGrid = IntervalSummary("Grid", records, battery,
                         offPeakStart, offPeakStop, isLoad = true, correction = exportCorrection)
@@ -229,6 +234,38 @@ class EnergyDay(
             }
         }
         if (batteryRanOut) battery.setRanOut()
+    }
+
+    /**
+     * Import Wh per local half-hour (48 slots) as (total, ev), mirroring Python
+     * EnergyDay.import_slots(): an import sample counts in full, an export sample credits the
+     * charger standby against import (so total sums to [getCalcImport]); ev is the EV's share
+     * of import, its draw less the CT-measured export it soaked up.
+     */
+    fun importSlots(): Pair<DoubleArray, DoubleArray> {
+        val total = DoubleArray(48)
+        val ev = DoubleArray(48)
+        for ((t, value) in gridRecords) {
+            val slot = t.hour * 2 + (if (t.minute >= 30) 1 else 0)
+            if (value > 0) total[slot] += value / 12.0
+            else total[slot] -= exportCorrection.split(-value / 12.0).second
+            val w = evByTime[t] ?: 0.0
+            if (w > 0) {
+                val ct = value - w
+                ev[slot] += (w - minOf(w, maxOf(0.0, -ct))) / 12.0
+            }
+        }
+        return Pair(total, ev)
+    }
+
+    /** Corrected export Wh per local half-hour (48 slots); sums to [getCalcExport]. */
+    fun exportSlots(): DoubleArray {
+        val out = DoubleArray(48)
+        for ((t, value) in gridRecords) {
+            if (value < 0) out[t.hour * 2 + (if (t.minute >= 30) 1 else 0)] +=
+                exportCorrection.split(-value / 12.0).first
+        }
+        return out
     }
 
     fun getCalcExport() = grid.peakExport + grid.offPeakExport

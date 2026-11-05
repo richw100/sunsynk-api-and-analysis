@@ -106,3 +106,56 @@ fun rebasedAnnualEv(before: SeasonalProjection, after: SeasonalProjection): Reba
         ratio, a.size)
 }
 
+
+/**
+ * Mirrors Python projection.SlotProjection: a seasonally weighted year of grid import and
+ * export per local half-hour (48 slots). Per calendar month it sums house import (total less
+ * the EV's share), EV import and export per slot; [evShape] is the EV import's half-hour shape
+ * from days on/after [evBasisFrom] when given (current charging habits).
+ */
+class SlotProjection(private val evBasisFrom: String = "") {
+    private val house = List(12) { DoubleArray(48) }
+    private val export = List(12) { DoubleArray(48) }
+    private val monthDays = IntArray(12)
+    private val evAll = DoubleArray(48)
+    private val evAfter = DoubleArray(48)
+
+    fun addDay(date: String, totalWh: DoubleArray, evWh: DoubleArray, exportWh: DoubleArray? = null) {
+        val m = date.substring(5, 7).toInt() - 1
+        monthDays[m]++
+        val after = evBasisFrom.isNotEmpty() && date >= evBasisFrom
+        for (k in 0 until 48) {
+            house[m][k] += (totalWh[k] - evWh[k]) / 1000
+            evAll[k] += evWh[k] / 1000
+            if (after) evAfter[k] += evWh[k] / 1000
+            if (exportWh != null) export[m][k] += exportWh[k] / 1000
+        }
+    }
+
+    val days get() = monthDays.sum()
+    val seasonal get() = monthDays.all { it > 0 }
+
+    private fun annual(series: List<DoubleArray>): DoubleArray {
+        if (seasonal) return DoubleArray(48) { k ->
+            (0 until 12).sumOf { m -> series[m][k] / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m] }
+        }
+        if (days == 0) return DoubleArray(48)
+        return DoubleArray(48) { k -> 365.0 * series.sumOf { it[k] } / days }
+    }
+
+    fun annualHouse() = annual(house)
+    fun annualExport() = annual(export)
+
+    /** {month index: (house import kWh, export kWh)} for an average such month (seen months only). */
+    fun monthly(): Map<Int, Pair<Double, Double>> = (0 until 12).filter { monthDays[it] > 0 }.associateWith { m ->
+        Pair(house[m].sum() / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m],
+            export[m].sum() / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m])
+    }
+
+    /** Fraction of EV import in each slot (sums to 1, or all 0 without EV data). */
+    fun evShape(): DoubleArray {
+        val src = if (evAfter.sum() > 0) evAfter else evAll
+        val total = src.sum()
+        return DoubleArray(48) { if (total > 0) src[it] / total else 0.0 }
+    }
+}

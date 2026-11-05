@@ -389,6 +389,20 @@ class PrefsStore(context: Context) {
     var themeMode: ThemeMode
         get() = ThemeMode.entries.getOrNull(prefs.getInt("theme_mode", 0)) ?: ThemeMode.SYSTEM
         set(v) { prefs.edit().putInt("theme_mode", v.ordinal).apply() }
+    /** DNO region letter (A-P) for the Tariffs tab. */
+    var tariffRegion: String
+        get() = prefs.getString("tariff_region", "") ?: ""
+        set(v) { prefs.edit().putString("tariff_region", v).apply() }
+}
+
+/** The latest analysis run's half-hourly year (TariffProfile), kept in private app storage. */
+class TariffProfileStore(context: Context) {
+    private val file = java.io.File(context.filesDir, "tariffProfile.json")
+    private val gson = com.google.gson.Gson()
+    fun save(profile: com.richw.sunsynk.analysis.TariffProfile) = file.writeText(gson.toJson(profile))
+    fun load(): com.richw.sunsynk.analysis.TariffProfile? = try {
+        if (file.exists()) gson.fromJson(file.readText(), com.richw.sunsynk.analysis.TariffProfile::class.java) else null
+    } catch (e: Exception) { null }
 }
 
 class CredentialStore(context: Context) {

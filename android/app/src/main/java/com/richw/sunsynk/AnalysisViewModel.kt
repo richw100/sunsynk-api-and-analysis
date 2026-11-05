@@ -11,6 +11,9 @@ import com.richw.sunsynk.analysis.EnergyPrices
 import com.richw.sunsynk.analysis.EvCharging
 import com.richw.sunsynk.api.FuseClient
 import com.richw.sunsynk.analysis.PriceData
+import com.richw.sunsynk.analysis.SlotProjection
+import com.richw.sunsynk.analysis.TariffCompare
+import com.richw.sunsynk.analysis.TariffProfile
 import com.richw.sunsynk.analysis.batteryWarnings
 import com.richw.sunsynk.analysis.round2
 import com.richw.sunsynk.api.SunsynkEnergyClient
@@ -96,6 +99,7 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
             } else emptyMap()
             val meterExport = FuseClient.loadDailyExportKwh(dataSources.fuseDir)
             val calcExportByDate = sortedMapOf<String, Double>()   // first pass only
+            val slots = SlotProjection(settings.evBasisFrom)          // first pass only, for the Tariffs tab
 
             val priceFiles = settings.energyPrices
             val batteryConfigs = settings.batteryConfigs
@@ -187,7 +191,11 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                                     )
                                     energyDay.runBattery(prices.battery)
                                     prices.addData(energyDay)
-                                    if (firstPass) calcExportByDate[dayDate] = energyDay.getCalcExport() / 1000
+                                    if (firstPass) {
+                                        calcExportByDate[dayDate] = energyDay.getCalcExport() / 1000
+                                        val (total, ev) = energyDay.importSlots()
+                                        slots.addDay(dayDate, total, ev, energyDay.exportSlots())
+                                    }
                                 }
                             }
                         }
@@ -195,6 +203,7 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                     }
 
                     prices.getGrandTotals()
+                    if (firstPass && slots.days > 0) saveTariffProfile(prices, priceJson, slots)
                     allPrices.add(prices)
                 }
 
@@ -317,6 +326,25 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
                 warnings = warnings,
             ),
         )
+    }
+
+    /** The first pass's half-hourly year (house + rebased EV import, export) for the Tariffs tab. */
+    private fun saveTariffProfile(prices: EnergyPrices, priceJson: com.google.gson.JsonObject, slots: SlotProjection) {
+        val d = prices.getDerived()
+        val annualImport = (d["annual_import_peak_kwh"] as Double) + (d["annual_import_off_peak_kwh"] as Double)
+        val (house, ev) = TariffCompare.annualProfile(slots, annualImport)
+        val monthly = slots.monthly()
+        TariffProfileStore(context).save(TariffProfile(
+            savedAt = java.time.LocalDateTime.now().withNano(0).toString().replace('T', ' '),
+            house = house, ev = ev, export = slots.annualExport().toList(),
+            monthlyHouse = monthly.mapValues { it.value.first },
+            monthlyExport = monthly.mapValues { it.value.second },
+            projectedImportKwh = annualImport,
+            seasonal = slots.seasonal,
+            note = prices.projectionNote(),
+            currentImport = TariffCompare.currentImport(priceJson),
+            currentExport = TariffCompare.currentExport(priceJson),
+        ))
     }
 
     private fun emit(msg: String) {

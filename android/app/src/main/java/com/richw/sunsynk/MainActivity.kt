@@ -27,6 +27,17 @@ import com.richw.sunsynk.ui.LoginScreen
 import com.richw.sunsynk.ui.MainScreen
 import com.richw.sunsynk.ui.ResultsScreen
 import com.richw.sunsynk.ui.TariffEditorScreen
+import com.richw.sunsynk.ui.TariffsScreen
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Text
+import androidx.compose.runtime.saveable.rememberSaveable
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,32 +120,50 @@ fun App(
             )
         }
         composable("main") {
-            MainScreen(
-                settings = settings,
-                username = username,
-                state = state,
-                isExporting = isExporting,
-                onRunAnalysis = { vm.runAnalysis(settings, username, password) },
-                onCancel = { vm.cancel() },
-                onEditCredentials = { navController.navigate("login") },
-                onViewResult = { navController.navigate("results") },
-                onEditConfig = { navController.navigate("config") },
-                onDataSources = { navController.navigate("sources") },
-                onExport = {
-                    if (!isExporting) {
-                        isExporting = true
-                        scope.launch {
-                            try {
-                                val store = ExportStore(context)
-                                val zip = withContext(Dispatchers.IO) { store.createZip() }
-                                store.share(zip)
-                            } finally {
-                                isExporting = false
-                            }
-                        }
+            var tab by rememberSaveable { mutableIntStateOf(0) }
+            val tariffsVm: TariffsViewModel = viewModel(factory = TariffsViewModel.Factory(context))
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) {
+                    if (tab == 1) {
+                        TariffsScreen(tariffsVm)
+                    } else {
+                        MainScreen(
+                            settings = settings,
+                            username = username,
+                            state = state,
+                            isExporting = isExporting,
+                            onRunAnalysis = { vm.runAnalysis(settings, username, password) },
+                            onCancel = { vm.cancel() },
+                            onEditCredentials = { navController.navigate("login") },
+                            onViewResult = { navController.navigate("results") },
+                            onEditConfig = { navController.navigate("config") },
+                            onDataSources = { navController.navigate("sources") },
+                            onExport = {
+                                if (!isExporting) {
+                                    isExporting = true
+                                    scope.launch {
+                                        try {
+                                            val store = ExportStore(context)
+                                            val zip = withContext(Dispatchers.IO) { store.createZip() }
+                                            store.share(zip)
+                                        } finally {
+                                            isExporting = false
+                                        }
+                                    }
+                                }
+                            },
+                        )
                     }
-                },
-            )
+                }
+                NavigationBar {
+                    NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
+                        icon = { Icon(Icons.Default.Analytics, contentDescription = null) },
+                        label = { Text("Analysis") })
+                    NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
+                        icon = { Icon(Icons.AutoMirrored.Filled.CompareArrows, contentDescription = null) },
+                        label = { Text("Tariffs") })
+                }
+            }
         }
         composable("sources") {
             val sourcesVm: DataSourcesViewModel = viewModel(factory = DataSourcesViewModel.Factory(context))
