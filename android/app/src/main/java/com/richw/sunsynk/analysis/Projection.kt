@@ -122,6 +122,23 @@ class SlotProjection(private val evBasisFrom: String = "") {
     private val evMonthAll = DoubleArray(12)        // EV import kWh per calendar month, every day
     private val evMonthAfter = DoubleArray(12)      // ... and only days since evBasisFrom
     private val afterDays = IntArray(12)
+    private val solarHouse = List(12) { DoubleArray(48) }   // PV used by the house / the car, kWh
+    private val solarEv = List(12) { DoubleArray(48) }
+    private val solarDays = IntArray(12)
+    val hasSolar get() = solarDays.sum() > 0
+
+    /** Where the PV went on [date] (EnergyDay.solarSlots, Wh per half-hour). */
+    fun addSolar(date: String, houseWh: DoubleArray, evWh: DoubleArray) {
+        val m = date.substring(5, 7).toInt() - 1
+        solarDays[m]++
+        for (k in 0 until 48) { solarHouse[m][k] += houseWh[k] / 1000; solarEv[m][k] += evWh[k] / 1000 }
+    }
+
+    private fun solarMonthSlots(series: List<DoubleArray>): List<List<Double>> = (0 until 12).map { m ->
+        List(48) { k -> if (solarDays[m] > 0) series[m][k] / solarDays[m] * SeasonalProjection.DAYS_IN_MONTH[m] else 0.0 }
+    }
+    fun monthSlotSolarHouse() = solarMonthSlots(solarHouse)
+    fun monthSlotSolarEv() = solarMonthSlots(solarEv)
 
     fun addDay(date: String, totalWh: DoubleArray, evWh: DoubleArray, exportWh: DoubleArray? = null) {
         val m = date.substring(5, 7).toInt() - 1
@@ -173,6 +190,21 @@ class SlotProjection(private val evBasisFrom: String = "") {
         }
         val total = raw.values.sum()
         return if (total > 0) raw.mapValues { it.value * evYear / total } else raw
+    }
+
+    /** kWh per calendar month x half-hour for an average such month (0 for unseen months), so
+     *  each month row sums over the year to [annualHouse]/[annualExport] once [seasonal]. */
+    private fun monthSlots(series: List<DoubleArray>): List<List<Double>> = (0 until 12).map { m ->
+        List(48) { k -> if (monthDays[m] > 0) series[m][k] / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m] else 0.0 }
+    }
+    fun monthSlotHouse() = monthSlots(house)
+    fun monthSlotExport() = monthSlots(export)
+
+    /** EV kWh per calendar month x half-hour: [monthlyEv] spread over [evShape], summing to [evYear]. */
+    fun monthSlotEv(evYear: Double): List<List<Double>> {
+        val monthly = monthlyEv(evYear)
+        val shape = evShape()
+        return (0 until 12).map { m -> List(48) { k -> (monthly[m] ?: 0.0) * shape[k] } }
     }
 
     /** Fraction of EV import in each slot (sums to 1, or all 0 without EV data). */

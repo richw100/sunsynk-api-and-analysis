@@ -157,6 +157,8 @@ class EnergyDay(
     /** Gap-filled net Grid records with EV added, and the EV draw by time (for half-hour slots). */
     private var gridRecords: List<Pair<LocalTime, Double>> = emptyList()
     private var evByTime: Map<LocalTime, Double> = emptyMap()
+    private var pvRecords: List<Pair<LocalTime, Double>> = emptyList()
+    private var ctGridRecords: List<Pair<LocalTime, Double>> = emptyList()   // CT-side net grid, before EV
     val suppliedLoad: Double
     val suppliedImport: Double
     val suppliedPv: Double
@@ -194,9 +196,10 @@ class EnergyDay(
             val obj = item.asJsonObject
             val records = fillGaps(parseRecords(obj))
             when (obj.get("label").asString) {
-                "PV" -> pvTmp = IntervalSummary("PV", records, battery, offPeakStart, offPeakStop)
+                "PV" -> { pvRecords = records; pvTmp = IntervalSummary("PV", records, battery, offPeakStart, offPeakStop) }
                 "Grid" -> {
                     evFromPv = records.sumOf { (t, w) -> minOf(ev[t] ?: 0.0, maxOf(0.0, -w)) } / 12.0
+                    ctGridRecords = records
                     gridRecords = addEv(records)
                     gridTmp = IntervalSummary("Grid", gridRecords, if (ev.isEmpty()) battery else null,
                         offPeakStart, offPeakStop, isLoad = true, correction = exportCorrection)
@@ -259,6 +262,26 @@ class EnergyDay(
     }
 
     /** Corrected export Wh per local half-hour (48 slots); sums to [getCalcExport]. */
+    /**
+     * Where the PV went, Wh per local half-hour, as (house, ev): ``house`` = PV the house used
+     * itself (generation minus what the CT saw exported), ``ev`` = PV the car took (the CT export
+     * the EV charger soaked up, which never reached the meter). Used to value the panels.
+     */
+    fun solarSlots(): Pair<DoubleArray, DoubleArray> {
+        val house = DoubleArray(48)
+        val ev = DoubleArray(48)
+        fun slot(t: LocalTime) = t.hour * 2 + (if (t.minute >= 30) 1 else 0)
+        for ((t, w) in pvRecords) if (w > 0) house[slot(t)] += w / 12.0
+        for ((t, w) in ctGridRecords) {
+            if (w >= 0) continue
+            val exported = -w
+            house[slot(t)] -= exported / 12.0
+            ev[slot(t)] += minOf(evByTime[t] ?: 0.0, exported) / 12.0
+        }
+        for (k in 0 until 48) house[k] = maxOf(0.0, house[k])
+        return Pair(house, ev)
+    }
+
     fun exportSlots(): DoubleArray {
         val out = DoubleArray(48)
         for ((t, value) in gridRecords) {

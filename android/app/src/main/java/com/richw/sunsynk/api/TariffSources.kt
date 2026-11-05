@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  * Charge Anytime add-on rate. Responses are cached under [cacheRoot]/{date}/ for the day.
  */
 class TariffSources(
-    cacheRoot: File,
+    private val cacheRoot: File,
     private val today: LocalDate = LocalDate.now(),
     private val log: (String) -> Unit = {},
     cacheDirName: String? = null,          // default: today's date (a cache for the day)
@@ -59,6 +59,29 @@ class TariffSources(
         // E.ON Next Optimise needs solar *and* a home battery.
         val GAS_EXCLUDE = Regex("EXPORT|OUTGOING|SEG|ZERO|TEST|EMPLOYEE|ENGAGE|POWER.PACK|HEAT.PUMP|COSY|SNUG|" +
             "FLUX|PREPAY|PARTNER|OPTIMISE", RegexOption.IGNORE_CASE)
+
+        /** Average p/kWh per calendar month (0-11) x local half-hour over [months] (one of each
+         *  calendar month), from a Kraken unit-rate timeline; null if any month has no prices. */
+        fun monthSlotAverages(rows: List<JsonObject>, months: List<java.time.YearMonth>): List<List<Double>>? {
+            val tl = com.richw.sunsynk.analysis.RateTimeline(rows)
+            val sums = Array(12) { DoubleArray(48) }
+            val counts = Array(12) { IntArray(48) }
+            for (ym in months) {
+                for (d in 1..ym.lengthOfMonth()) {
+                    val inst = com.richw.sunsynk.analysis.TariffHistory.slotInstants(ym.atDay(d))
+                    for (k in 0 until 48) {
+                        val v = tl.at(inst[k]) ?: continue
+                        sums[ym.monthValue - 1][k] += v; counts[ym.monthValue - 1][k]++
+                    }
+                }
+            }
+            if ((0 until 12).any { m -> counts[m].sum() == 0 }) return null
+            return (0 until 12).map { m ->
+                val known = (0 until 48).filter { counts[m][it] > 0 }
+                val fill = known.sumOf { sums[m][it] / counts[m][it] } / known.size
+                List(48) { k -> if (counts[m][k] > 0) sums[m][k] / counts[m][k] else fill }
+            }
+        }
 
         /** Code without its gas marker: E.ON's NEXT_DRIVE_FIXED_GAS_V37 <-> NEXT_DRIVE_FIXED_V37. */
         fun gasCodeKey(code: String) = code.replace(Regex("(?i)[-_]GAS(?=[-_]|$)"), "")
@@ -375,7 +398,10 @@ class TariffSources(
         val single = (detail.get("single_register_electricity_tariffs") as? JsonObject)?.let { dd("single_register_electricity_tariffs") }
         if (single != null) {
             val slots = unitRateSlots(single, product) ?: return null
-            val t = base.copy(slotRates = slots, standing = single.get("standing_charge_inc_vat").asDouble, gas = ownGas)
+            val ratesUrl = single.getAsJsonArray("links")?.map { it.asJsonObject }
+                ?.firstOrNull { it.get("rel").asString == "standard_unit_rates" }?.get("href")?.asString
+            val t = base.copy(slotRates = slots, standing = single.get("standing_charge_inc_vat").asDouble, gas = ownGas,
+                ratesUrl = ratesUrl)
             if (!export) return t
             val requires = EXPORT_REQUIRES.firstOrNull { it.first.containsMatchIn(code) }?.second
             val flat = EXPORT_FLAT_IMPORT_ONLY.containsMatchIn(code)
@@ -456,7 +482,7 @@ class TariffSources(
                             slug, supplier, region)
                         if (t == null) log("skip $supplier/$slug: $reason")
                         t
-                    } catch (e: Exception) { log("skip $supplier/$slug: ${e.message}"); null }
+                    } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; log("skip $supplier/$slug: ${e.message}"); null }
                 }
             }.awaitAll().filterNotNull()
         }
@@ -479,6 +505,29 @@ class TariffSources(
         return e.copy(gas = g?.let { TariffCompare.gasOffer(e.supplier, e.name, e.code, e.source, e.kind, it.slotRates[0], it.standing) })
     }
 
+    private val history by lazy { TariffSources(cacheRoot, today, log, cacheDirName = TariffHistorySource.HISTORY_DIR) }
+
+    /** A dynamic (half-hourly) tariff with its last 12 complete months of prices: [Tariff.monthSlotRates]
+     *  for seasonal pricing, and slotRates = their yearly average per half-hour (instead of the
+     *  last RATE_DAYS days, which can be far from a typical year). Completed months are cached
+     *  permanently (the history cache), so this is ~12 requests per tariff once. */
+    private suspend fun seasonal(t: Tariff): Tariff {
+        val url = t.ratesUrl ?: return t
+        val last = java.time.YearMonth.from(today).minusMonths(1)
+        val months = (11 downTo 0).map { last.minusMonths(it.toLong()) }
+        val rows = months.flatMap { ym ->
+            val from = ym.atDay(1).minusDays(1)
+            history.pages("$url?period_from=${from}T00:00:00Z&period_to=${ym.plusMonths(1).atDay(1)}T00:00:00Z&page_size=1500")
+        }
+        val ms = monthSlotAverages(rows, months) ?: return t
+        // ms is indexed by calendar month (0 = January); weight each by its length for the yearly average.
+        val yearly = List(48) { k -> months.sumOf { ms[it.monthValue - 1][k] * it.lengthOfMonth() } / months.sumOf { it.lengthOfMonth() } }
+        log("${t.supplier} ${t.name}: seasonal prices from ${months.first()} to ${months.last()}")
+        return t.copy(monthSlotRates = ms, slotRates = yearly,
+            note = listOf(t.note, "priced month by month at the last 12 months' half-hourly prices")
+                .filter { it.isNotBlank() }.joinToString("; "))
+    }
+
     /** Every source; a failing one is logged and skipped. */
     suspend fun fetchAll(region: String): List<Tariff> {
         val r = region.uppercase().trimStart('_')
@@ -489,11 +538,11 @@ class TariffSources(
                 out += krakenTariffs(label, host, r, export = false)
                 out += krakenTariffs(label, host, r, export = true)
                 out += krakenGasOffers(label, host, r)
-            } catch (e: Exception) { log("$label failed: ${e.message}") }
+            } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; log("$label failed: ${e.message}") }
         }
-        try { out += energyplusTariffs(r) } catch (e: Exception) { log("energyplus failed: ${e.message}") }
+        try { out += energyplusTariffs(r) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; log("energyplus failed: ${e.message}") }
         var cap: Tariff? = null
-        try { cap = ofgemCap(r)?.also { out += it } } catch (e: Exception) { log("Ofgem failed: ${e.message}") }
+        try { cap = ofgemCap(r)?.also { out += it } } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; log("Ofgem failed: ${e.message}") }
         try {
             val rate = parseChargeAnytimeRate(getText(OVO_CHARGE_ANYTIME_URL)) ?: throw Exception("rate not found")
             val ovo = out.filter { it.direction == "IMPORT" && it.supplier.lowercase().startsWith("ovo") }
@@ -503,7 +552,21 @@ class TariffSources(
                 out += t.copy(name = "${t.name} + Charge Anytime", code = t.code + "+CA", evRate = rate, smartEv = true,
                     note = "EV smart-charged at ${rate}p (compatible car/charger needed)")
             }
-        } catch (e: Exception) { log("OVO Charge Anytime failed: ${e.message}") }
-        return linkGas(out)
+        } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; log("OVO Charge Anytime failed: ${e.message}") }
+        // Half-hourly tariffs (Agile, Agile Outgoing ...): a year of prices, not the last 14 days.
+        val withSeasons = coroutineScope {
+            out.map { t ->
+                async {
+                    if (t.ratesUrl != null && t.direction != "GAS" &&
+                        TariffCompare.describeRates(t.slotRates, t.direction == "EXPORT").first == "dynamic")
+                        try { seasonal(t) } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            log("seasonal ${t.code}: ${e.message}"); t
+                        }
+                    else t
+                }
+            }.awaitAll()
+        }
+        return linkGas(withSeasons)
     }
 }

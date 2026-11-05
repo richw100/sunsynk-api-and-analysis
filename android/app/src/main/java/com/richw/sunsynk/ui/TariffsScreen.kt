@@ -39,9 +39,21 @@ private val MONTHS = listOf("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N
 private fun gbp(v: Double) = "£%,.0f".format(v)
 private fun signed(v: Double) = (if (v >= 0) "+" else "−") + "£%,.0f".format(kotlin.math.abs(v))
 
+/** What the Compare tab will show for the ticked pairs / gas tariffs (see TariffCompare.compareOptions). */
+private fun selectionText(pairs: Int, gases: Int): String = when {
+    pairs == 2 && gases == 2 -> "A = 1st pair + 1st gas, B = 2nd pair + 2nd gas"
+    pairs == 2 && gases == 1 -> "2 pairs, both with the ticked gas"
+    pairs == 2 -> "2 pairs, each with its best gas (tick gas tariffs to choose)"
+    pairs == 1 && gases == 2 -> "1 pair with each of the 2 gas tariffs"
+    pairs == 1 && gases == 1 -> "Pair + gas vs your current setup"
+    pairs == 1 -> "Tick a gas tariff, or another pair, to compare"
+    gases == 2 -> "Your current electricity with each gas tariff"
+    else -> "Ticked gas vs your current setup (tick a pair to combine)"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TariffsScreen(vm: TariffsViewModel) {
+fun TariffsScreen(vm: TariffsViewModel, onCompare: () -> Unit = {}) {
     val state by vm.state.collectAsState()
     LaunchedEffect(Unit) { vm.reloadProfile() }
     Scaffold(topBar = { TopAppBar(title = { Text("Tariff comparison") }) }) { padding ->
@@ -57,6 +69,18 @@ fun TariffsScreen(vm: TariffsViewModel) {
                         label = { Text("Today's rates") })
                     FilterChip(selected = state.mode == "history", onClick = { vm.setMode("history") },
                         label = { Text("History at actual rates") })
+                }
+            }
+            if (state.selected.isNotEmpty() || state.selectedGas.isNotEmpty()) item {
+                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(selectionText(state.selected.size, state.selectedGas.size),
+                                style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = vm::clearSelection, contentPadding = PaddingValues(0.dp)) { Text("Clear") }
+                        }
+                        Button(onClick = onCompare, enabled = state.compare.size == 2) { Text("Compare") }
+                    }
                 }
             }
             if (state.mode == "history") {
@@ -77,11 +101,13 @@ fun TariffsScreen(vm: TariffsViewModel) {
                 val base = state.overall.firstOrNull { it.pair.isCurrent }?.total
                 item { SectionTitle("Overall: electricity + gas − export",
                     "£/year; gas = the tariff's own (or supplier's) gas, or the cheapest gas anywhere if cheaper") }
-                items(state.overall.take(10) + state.overall.drop(10).filter { it.pair.isCurrent }) { OverallCard(it, base, profile) }
+                items(state.overall.take(10) + state.overall.drop(10).filter { it.pair.isCurrent }) {
+                    OverallCard(it, base, profile, TariffCompare.pairKey(it.pair) in state.selected) { k -> vm.toggleSelect(k) }
+                }
             }
             if (state.pairs.isNotEmpty()) {
                 item { SectionTitle("Best import + export pairs", "net £/year = import − export; tap for detail") }
-                items(state.pairs) { PairCard(it, profile) }
+                items(state.pairs) { PairCard(it, profile, TariffCompare.pairKey(it) in state.selected) { k -> vm.toggleSelect(k) } }
             }
             if (state.imports.isNotEmpty()) {
                 item { SectionTitle("Import tariffs", "house + EV (re-timed) + standing charge; tap for split") }
@@ -100,7 +126,10 @@ fun TariffsScreen(vm: TariffsViewModel) {
             state.gasYear?.let { g ->
                 item { GasYearCard(g) }
                 item { SectionTitle("Gas tariffs", "£/year = kWh × unit rate + 365 × standing charge") }
-                items(state.gasRows.take(15) + state.gasRows.drop(15).filter { it.isCurrent }) { GasCard(it) }
+                items(state.gasRows.take(15) + state.gasRows.drop(15).filter { it.isCurrent }) {
+                    val key = TariffCompare.gasKey(it.tariff)
+                    GasCard(it, key in state.selectedGas) { vm.toggleGas(key) }
+                }
             } ?: item {
                 Text("Gas: sign in to E.ON Next under Data sources and download, to add gas to the comparison.",
                     style = MaterialTheme.typography.bodySmall)
@@ -111,9 +140,10 @@ fun TariffsScreen(vm: TariffsViewModel) {
 }
 
 @Composable
-private fun OverallCard(r: OverallRow, base: Double?, profile: TariffProfile) {
+private fun OverallCard(r: OverallRow, base: Double?, profile: TariffProfile, selected: Boolean, onSelect: (String) -> Unit) {
     val p = r.pair
     Expandable(highlight = p.isCurrent, header = {
+        Checkbox(checked = selected, onCheckedChange = { onSelect(TariffCompare.pairKey(p)) })
         Column(Modifier.weight(1f)) {
             Text("${p.imp.tariff.supplier} ${p.imp.tariff.name}", style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -158,10 +188,11 @@ private fun GasYearCard(g: GasYear) {
 }
 
 @Composable
-private fun GasCard(r: GasRow) {
+private fun GasCard(r: GasRow, selected: Boolean, onSelect: () -> Unit) {
     Card(Modifier.fillMaxWidth(), colors = if (r.isCurrent)
         CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer) else CardDefaults.cardColors()) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(end = 12.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = selected, onCheckedChange = { onSelect() })
             Column(Modifier.weight(1f)) {
                 Text("${r.tariff.supplier} ${r.tariff.name}", style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -426,16 +457,34 @@ private fun Vs(v: Double, isCurrent: Boolean, higherIsBetter: Boolean = false) {
 }
 
 @Composable
-private fun Line(label: String, value: String) {
+private fun Line(label: String, value: String, bold: Boolean = false) {
     Row(Modifier.fillMaxWidth()) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-        Text(value, style = MaterialTheme.typography.bodySmall)
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal)
+        Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal)
     }
+}
+
+/** The panels' value at this pair's rates: self-use, PV into the car, export; ROI and payback. */
+@Composable
+fun SolarLines(pair: Pair3, profile: TariffProfile) {
+    HorizontalDivider(Modifier.padding(vertical = 2.dp))
+    val s = TariffCompare.solarRoi(pair, profile)
+    if (s == null) {
+        Text("Solar ROI: re-run the analysis once to record where the PV goes.", style = MaterialTheme.typography.labelSmall)
+        return
+    }
+    Text("Solar panels at these rates", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+    Line("Used in the house", "%,.0f kWh  %s".format(s.selfUseKwh, gbp(s.selfUse)))
+    Line("Into the car (overnight rate)", "%,.0f kWh  %s".format(s.evKwh, gbp(s.ev)))
+    Line("Exported", "%,.0f kWh  %s".format(s.exportKwh, gbp(s.export)))
+    Line("Saving a year", gbp(s.saving), bold = true)
+    if (s.cost > 0) Line("ROI on ${gbp(s.cost)}", "%.1f%% a year · payback %.1f years".format(s.roiPct, s.paybackYears))
 }
 
 @Composable
 private fun PairLines(pair: Pair3, profile: TariffProfile) {
-    val b = TariffCompare.pairBreakdown(pair, profile.house, profile.ev, profile.export)
+    val b = TariffCompare.pairBreakdown(pair, profile.house, profile.ev, profile.export, profile.monthSlotHouse, profile.monthSlotEv)
     Line("Import rates", "${pair.imp.ratesText} p")
     Line("Standing charge", "%.2fp/day".format(pair.imp.tariff.standing))
     Line("Export rates", "${pair.exp.ratesText} p")
@@ -448,14 +497,16 @@ private fun PairLines(pair: Pair3, profile: TariffProfile) {
     Line("Import total", gbp(b.importTotal))
     Line("Export", "%,.0f kWh  −%s  (%.2fp)".format(b.exportKwh, gbp(b.export), b.exportRate))
     Line("Net (electricity)", gbp(b.net))
+    SolarLines(pair, profile)
     if (pair.exp.tariff.requires != null) Line("Export needs import from", pair.exp.tariff.requires!!)
     val notes = listOfNotNull(pair.imp.tariff.note.ifBlank { null }, pair.exp.tariff.note.ifBlank { null })
     notes.forEach { Text(it, style = MaterialTheme.typography.labelSmall) }
 }
 
 @Composable
-private fun PairCard(pair: Pair3, profile: TariffProfile) {
+private fun PairCard(pair: Pair3, profile: TariffProfile, selected: Boolean, onSelect: (String) -> Unit) {
     Expandable(highlight = pair.isCurrent, header = {
+        Checkbox(checked = selected, onCheckedChange = { onSelect(TariffCompare.pairKey(pair)) })
         Column(Modifier.weight(1f)) {
             Text("${pair.imp.tariff.supplier} ${pair.imp.tariff.name}", style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)

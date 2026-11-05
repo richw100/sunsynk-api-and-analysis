@@ -25,6 +25,10 @@ data class Tariff(
     val gasRate: Double? = null,          // direction GAS: p/kWh inc VAT
     val gasStanding: Double? = null,      // direction GAS: p/day
     val gas: Tariff? = null,              // import: its own / matching gas tariff (direction GAS)
+    val ratesUrl: String? = null,         // Kraken unit-rate timeline (dynamic tariffs' history)
+    // Dynamic (half-hourly) tariffs: the average price per calendar month (0-11) and local
+    // half-hour over the last 12 complete months, priced against the profile's month-slot kWh.
+    val monthSlotRates: List<List<Double>>? = null,
 )
 
 /** A seasonally weighted gas year: each calendar month's average day x its length. */
@@ -36,7 +40,24 @@ data class GasRow(val tariff: Tariff, val cost: Double, val vsCurrent: Double) {
 
 /** Import + export pair with gas: [own] = its own/supplier's gas (current gas for the current
  *  pair), [cheapest] = cheapest gas anywhere; [total] = net + the cheaper of the two. */
+/** What the panels are worth a year at one import + export pair's rates. */
+data class SolarRoi(
+    val selfUseKwh: Double, val selfUse: Double,     // PV the house used, at the import rates it displaced
+    val evKwh: Double, val ev: Double,               // PV the car took, at the overnight / smart-EV rate
+    val exportKwh: Double, val export: Double,       // export income
+    val cost: Double,                                // what the panels cost (config originalPrice)
+) {
+    val saving get() = selfUse + ev + export
+    val roiPct get() = if (cost > 0) 100 * saving / cost else 0.0
+    val paybackYears get() = if (saving > 0) cost / saving else Double.POSITIVE_INFINITY
+}
+
 data class OverallRow(val pair: Pair3, val own: GasRow?, val cheapest: GasRow?, val total: Double)
+
+/** One column of the Compare tab: an import + export pair with a gas tariff (null = no gas data). */
+data class CompareOption(val pair: Pair3, val gas: GasRow?) {
+    val total get() = pair.net + (gas?.cost ?: 0.0)
+}
 
 /** The projected year from the latest analysis run, saved for the Tariffs tab. */
 data class TariffProfile(
@@ -47,6 +68,16 @@ data class TariffProfile(
     val monthlyHouse: Map<Int, Double>,   // average month, kWh (months seen only)
     val monthlyExport: Map<Int, Double>,
     val monthlyEv: Map<Int, Double>? = null, // average month, kWh (null in profiles saved before it)
+    // kWh per calendar month (0-11) x local half-hour for an average such month (each sums to the
+    // annual per-slot list); null in profiles saved before they existed.
+    val monthSlotHouse: List<List<Double>>? = null,
+    val monthSlotEv: List<List<Double>>? = null,
+    val monthSlotExport: List<List<Double>>? = null,
+    // Where the PV goes (kWh per calendar month x half-hour) and what the panels cost, for the
+    // solar ROI at each tariff's rates; null in profiles saved before them.
+    val monthSlotSolarHouse: List<List<Double>>? = null,
+    val monthSlotSolarEv: List<List<Double>>? = null,
+    val solarCost: Double? = null,
     val projectedImportKwh: Double,       // PROJECTED YEARLY IMPORT, for the cross-check
     val seasonal: Boolean,
     val note: String,
@@ -175,23 +206,42 @@ object TariffCompare {
         val evSplit: EvSplit,
     )
 
-    private fun price(t: Tariff, house: List<Double>, ev: List<Double>, currentOff: Set<Int>): Price {
+    /** One stretch of the year priced at one set of 48 slot rates: the whole year (a tariff's
+     *  slotRates), or a calendar month (a dynamic tariff's [Tariff.monthSlotRates] against the
+     *  profile's kWh for an average such month). */
+    private class Segment(val house: List<Double>, val ev: List<Double>, val rates: List<Double>)
+
+    private fun segments(t: Tariff, house: List<Double>, ev: List<Double>,
+                         monthHouse: List<List<Double>>?, monthEv: List<List<Double>>?): List<Segment> {
+        val ms = t.monthSlotRates
+        return if (ms != null && ms.size == 12 && monthHouse != null && monthEv != null)
+            (0 until 12).map { Segment(monthHouse[it], monthEv[it], ms[it]) }
+        else listOf(Segment(house, ev, t.slotRates))
+    }
+
+    private fun price(t: Tariff, house: List<Double>, ev: List<Double>, currentOff: Set<Int>,
+                      monthHouse: List<List<Double>>? = null, monthEv: List<List<Double>>? = null): Price {
+        val standing = 365 * t.standing / 100
+        var houseCost = 0.0; var evNow = 0.0; var evBest = 0.0
+        var offKwh = 0.0; var offCost = 0.0; var peakKwh = 0.0; var peakCost = 0.0
+        for (seg in segments(t, house, ev, monthHouse, monthEv)) {
+            val rates = seg.rates
+            val cheapest = rates.min()
+            houseCost += seg.house.indices.sumOf { seg.house[it] * rates[it] } / 100
+            evNow += seg.ev.indices.sumOf { seg.ev[it] * rates[it] } / 100
+            val evOffRate = if (t.smartEv) minOf(t.evRate ?: cheapest, cheapest) else cheapest
+            // Projection rule: all EV charging is scheduled into the overnight (cheapest) rate, or
+            // the smart-EV rate on smart-charging tariffs. ([currentOff] is kept for callers.)
+            for (k in seg.ev.indices) {
+                evBest += seg.ev[k] * evOffRate / 100
+                offKwh += seg.ev[k]; offCost += seg.ev[k] * evOffRate
+            }
+        }
+        val evRetimed = minOf(evNow, evBest)
+        val evSplit = EvSplit(offKwh, if (offKwh > 0) offCost / offKwh else 0.0, peakKwh,
+            if (peakKwh > 0) peakCost / peakKwh else 0.0)
         val rates = t.slotRates
         val cheapest = rates.min()
-        val standing = 365 * t.standing / 100
-        val houseCost = house.indices.sumOf { house[it] * rates[it] } / 100
-        val evNow = ev.indices.sumOf { ev[it] * rates[it] } / 100
-        val evOffRate = if (t.smartEv) minOf(t.evRate ?: cheapest, cheapest) else cheapest
-        // rate each half-hour's EV energy is charged at once re-timed
-        val evRates = ev.indices.map { k ->
-            if (t.smartEv || k in currentOff || rates[k] <= cheapest + 0.005) evOffRate else rates[k]
-        }
-        val evRetimed = minOf(evNow, ev.indices.sumOf { ev[it] * evRates[it] } / 100)
-        val offIdx = ev.indices.filter { evRates[it] <= evOffRate + 0.005 }
-        val peakIdx = ev.indices.filter { it !in offIdx }
-        val evPeakKwh = peakIdx.sumOf { ev[it] }
-        val evSplit = EvSplit(offIdx.sumOf { ev[it] }, evOffRate, evPeakKwh,
-            if (evPeakKwh > 0) peakIdx.sumOf { ev[it] * evRates[it] } / evPeakKwh else 0.0)
         val cheapSlots = (0 until 48).filter { rates[it] <= cheapest + 0.005 }
         val evKwh = ev.sum()
         return Price(houseCost, evNow, evRetimed, if (evKwh > 0) 100 * evRetimed / evKwh else 0.0,
@@ -199,7 +249,68 @@ object TariffCompare {
             if (cheapSlots.size < 48) cheapSlots.sumOf { house[it] + ev[it] } else 0.0, evSplit)
     }
 
-    fun priceExport(t: Tariff, export: List<Double>) = export.indices.sumOf { export[it] * t.slotRates[it] } / 100
+    fun pairKey(p: Pair3) = "${p.imp.tariff.code}|${p.exp.tariff.code}"
+
+    fun gasKey(t: Tariff) = "${t.supplier}|${t.name}|${t.code}"
+
+    /**
+     * The two columns of the Compare tab from what's ticked: up to two import + export pairs
+     * ([pairKeys]) and up to two gas tariffs ([gasKeys]), combined as
+     *  - 2 pairs: each pair with the matching ticked gas (2 gases), the one ticked gas (1), or its
+     *    own Overall gas (the cheaper of its supplier's / the cheapest anywhere; current gas for the current pair);
+     *  - 1 pair + 1 or 2 gases: that pair with each gas, or, with one gas, against today's setup;
+     *  - gases only: today's electricity with each gas, or with one gas, against today's setup.
+     * Fewer than two columns means more needs ticking.
+     */
+    fun compareOptions(allPairs: List<Pair3>, overall: List<OverallRow>, gasRows: List<GasRow>,
+                       pairKeys: List<String>, gasKeys: List<String>): List<CompareOption> {
+        val pairs = pairKeys.mapNotNull { k -> allPairs.firstOrNull { pairKey(it) == k } }
+        val gases = gasKeys.mapNotNull { k -> gasRows.firstOrNull { gasKey(it.tariff) == k } }
+        fun defaultGas(p: Pair3): GasRow? = overall.firstOrNull { pairKey(it.pair) == pairKey(p) }
+            ?.let { o -> listOfNotNull(o.own, o.cheapest).minByOrNull { it.cost } }
+        val currentPair = allPairs.firstOrNull { it.isCurrent }
+        val current = currentPair?.let { CompareOption(it, gasRows.firstOrNull { g -> g.isCurrent }) }
+        return when (pairs.size) {
+            2 -> pairs.mapIndexed { i, p ->
+                CompareOption(p, when (gases.size) { 2 -> gases[i]; 1 -> gases[0]; else -> defaultGas(p) })
+            }
+            1 -> when (gases.size) {
+                2 -> gases.map { CompareOption(pairs[0], it) }
+                1 -> listOfNotNull(current, CompareOption(pairs[0], gases[0]))
+                else -> emptyList()
+            }
+            else -> when {
+                currentPair == null -> emptyList()
+                gases.size == 2 -> gases.map { CompareOption(currentPair, it) }
+                gases.size == 1 -> listOfNotNull(current, CompareOption(currentPair, gases[0]))
+                else -> emptyList()
+            }
+        }.takeIf { it.size == 2 } ?: emptyList()
+    }
+
+    /** The panels' yearly value at [pair]'s rates, or null when the profile has no PV split. */
+    fun solarRoi(pair: Pair3, profile: TariffProfile): SolarRoi? {
+        val sh = profile.monthSlotSolarHouse ?: return null
+        val se = profile.monthSlotSolarEv ?: return null
+        val t = pair.imp.tariff
+        val ms = t.monthSlotRates?.takeIf { it.size == 12 }
+        var selfUse = 0.0; var ev = 0.0
+        for (m in 0 until 12) {
+            val rates = ms?.get(m) ?: t.slotRates
+            val cheapest = rates.min()
+            val overnight = if (t.smartEv) minOf(t.evRate ?: cheapest, cheapest) else cheapest
+            for (k in 0 until 48) { selfUse += sh[m][k] * rates[k] / 100; ev += se[m][k] * overnight / 100 }
+        }
+        return SolarRoi(sh.sumOf { it.sum() }, selfUse, se.sumOf { it.sum() }, ev,
+            profile.export.sum(), pair.exp.income, profile.solarCost ?: 0.0)
+    }
+
+    fun priceExport(t: Tariff, export: List<Double>, monthExport: List<List<Double>>? = null): Double {
+        val ms = t.monthSlotRates
+        if (ms != null && ms.size == 12 && monthExport != null)
+            return (0 until 12).sumOf { m -> monthExport[m].indices.sumOf { monthExport[m][it] * ms[m][it] } } / 100
+        return export.indices.sumOf { export[it] * t.slotRates[it] } / 100
+    }
 
     /** (type, text): "single" "25.60", "tou" "9.40 00:30-05:30 / 34.71", "dynamic" "avg 28.1 (..)".
      *  A time-of-use text leads with the cheapest rate, or for export ([bestHigh]) the highest. */
@@ -229,11 +340,12 @@ object TariffCompare {
     private fun slotTime(k: Int) = "%02d:%02d".format((k % 48) / 2, 30 * (k % 2))
 
     /** Priced import rows, cheapest total first. */
-    fun compare(tariffs: List<Tariff>, current: Tariff, house: List<Double>, ev: List<Double>): List<ImportRow> {
+    fun compare(tariffs: List<Tariff>, current: Tariff, house: List<Double>, ev: List<Double>,
+                monthHouse: List<List<Double>>? = null, monthEv: List<List<Double>>? = null): List<ImportRow> {
         val off = windowSlots(current.window)
-        val base = price(current, house, ev, off).total
+        val base = price(current, house, ev, off, monthHouse, monthEv).total
         return (listOf(current) + tariffs.filter { it.direction == "IMPORT" }).map { t ->
-            val p = price(t, house, ev, off)
+            val p = price(t, house, ev, off, monthHouse, monthEv)
             val (kind, text) = describeRates(t.slotRates)
             ImportRow(t, p.houseCost, p.evNow, p.evRetimed, p.evPPerKwh, p.standingYear, p.asNow, p.total,
                 p.cheapKwh, kind, text, p.total - base, p.evSplit)
@@ -241,10 +353,11 @@ object TariffCompare {
     }
 
     /** Priced export rows, highest income first. */
-    fun compareExports(tariffs: List<Tariff>, current: Tariff, export: List<Double>): List<ExportRow> {
-        val base = priceExport(current, export)
+    fun compareExports(tariffs: List<Tariff>, current: Tariff, export: List<Double>,
+                       monthExport: List<List<Double>>? = null): List<ExportRow> {
+        val base = priceExport(current, export, monthExport)
         return (listOf(current) + tariffs.filter { it.direction == "EXPORT" }).map { t ->
-            val income = priceExport(t, export)
+            val income = priceExport(t, export, monthExport)
             val (kind, text) = describeRates(t.slotRates, bestHigh = true)
             ExportRow(t, income, kind, text, income - base)
         }.sortedByDescending { it.income }
@@ -268,16 +381,18 @@ object TariffCompare {
 
     /** House split into the import tariff's cheapest-rate half-hours ("off-peak") and the rest,
      *  EV (re-timed), standing, export and net, for one pair. */
-    fun pairBreakdown(pair: Pair3, house: List<Double>, ev: List<Double>, export: List<Double>): PairBreakdown {
-        val rates = pair.imp.tariff.slotRates
-        val cheapest = rates.min()
-        val tou = rates.map { Math.round(it * 100) }.toSet().size > 1
-        val off = (0 until 48).filter { tou && rates[it] <= cheapest + 0.005 }.toSet()
-        val peak = (0 until 48).filter { it !in off }
-        val offKwh = off.sumOf { house[it] }
-        val peakKwh = peak.sumOf { house[it] }
-        val offCost = off.sumOf { house[it] * rates[it] } / 100
-        val peakCost = peak.sumOf { house[it] * rates[it] } / 100
+    fun pairBreakdown(pair: Pair3, house: List<Double>, ev: List<Double>, export: List<Double>,
+                      monthHouse: List<List<Double>>? = null, monthEv: List<List<Double>>? = null): PairBreakdown {
+        var offKwh = 0.0; var peakKwh = 0.0; var offCost = 0.0; var peakCost = 0.0
+        for (seg in segments(pair.imp.tariff, house, ev, monthHouse, monthEv)) {
+            val rates = seg.rates
+            val cheapest = rates.min()
+            val tou = rates.map { Math.round(it * 100) }.toSet().size > 1
+            for (k in 0 until 48) {
+                if (tou && rates[k] <= cheapest + 0.005) { offKwh += seg.house[k]; offCost += seg.house[k] * rates[k] / 100 }
+                else { peakKwh += seg.house[k]; peakCost += seg.house[k] * rates[k] / 100 }
+            }
+        }
         val exportKwh = export.sum()
         return PairBreakdown(
             peakKwh, peakCost, if (peakKwh > 0) 100 * peakCost / peakKwh else 0.0,

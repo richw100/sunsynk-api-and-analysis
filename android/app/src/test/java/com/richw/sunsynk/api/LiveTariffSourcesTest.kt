@@ -19,10 +19,15 @@ class LiveTariffSourcesTest {
         val src = TariffSources(Files.createTempDirectory("tariffs").toFile(), log = { synchronized(log) { log.add(it) } })
         val tariffs = src.fetchAll(region)
         log.forEach { println("LOG $it") }
-        tariffs.sortedBy { it.direction + it.supplier + it.name }.forEach {
+        tariffs.filter { it.direction != "GAS" }.sortedBy { it.direction + it.supplier + it.name }.forEach {
             println("TARIFF ${it.direction} | ${it.supplier} | ${it.name} | ${it.kind} | min %.2f max %.2f | sc %.2f | %s%s"
                 .format(it.slotRates.min(), it.slotRates.max(), it.standing,
                     if (it.smartEv) "smart " else "", it.requires ?: ""))
+        }
+        tariffs.filter { it.monthSlotRates != null }.forEach { t ->
+            val ms = t.monthSlotRates!!
+            println("SEASONAL ${t.direction} ${t.supplier} ${t.name}: yearly avg %.2f, Jan midday %.2f, Jul midday %.2f, Jan 4-7pm %.2f"
+                .format(t.slotRates.average(), ms[0].subList(20, 30).average(), ms[6].subList(20, 30).average(), ms[0].subList(32, 38).average()))
         }
         val sources = tariffs.map { it.source }.toSet()
         println("SUMMARY ${tariffs.size} tariffs, ${src.calls} requests, sources $sources")

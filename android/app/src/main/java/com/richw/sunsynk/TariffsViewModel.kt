@@ -45,12 +45,23 @@ data class TariffsUiState(
     val gasYear: GasYear? = null,         // from the E.ON gas meter (Data sources)
     val gasRows: List<GasRow> = emptyList(),
     val overall: List<OverallRow> = emptyList(),
-)
+    val selected: List<String> = emptyList(),   // up to 2 pair keys (TariffCompare.pairKey) to compare
+    val selectedGas: List<String> = emptyList(),   // up to 2 gas keys (TariffCompare.gasKey) to compare
+) {
+    /** The Compare tab's two columns from what's ticked (empty until there's enough). */
+    val compare: List<com.richw.sunsynk.analysis.CompareOption> by lazy {
+        if (selected.isEmpty() && selectedGas.isEmpty()) emptyList()
+        else TariffCompare.compareOptions(TariffCompare.bestPairs(imports, exports, Int.MAX_VALUE),
+            overall, gasRows, selected, selectedGas)
+    }
+}
 
 /**
  * Tariffs tab: prices the latest analysis run's half-hourly year ([TariffProfileStore]) against
  * the latest rates scraped by [TariffSources] (cached per day in filesDir/tariffData).
  */
+private const val SAVED_RATES_VERSION = 2
+
 class TariffsViewModel(private val context: Context) : ViewModel() {
     private val prefs = PrefsStore(context)
     private val profiles = TariffProfileStore(context)
@@ -65,7 +76,9 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
     private val savedRates = File(context.filesDir, "tariffsLatest.json")
     private val savedHistory = File(context.filesDir, "tariffHistoryResult.json")
 
-    private data class SavedRates(val region: String, val fetchedAt: String, val tariffs: List<Tariff>)
+    // Bump when saved rates from an older build must not be reused (2: dynamic tariffs priced
+    // from 12 months of prices, not the last 14 days).
+    private data class SavedRates(val region: String, val fetchedAt: String, val tariffs: List<Tariff>, val version: Int = 0)
     private data class SavedHistory(val region: String, val note: String, val result: HistoryResult)
 
     init {
@@ -74,7 +87,7 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
             val region = _state.value.region
             val (rates, history) = withContext(Dispatchers.IO) {
                 Pair(runCatching { gson.fromJson(savedRates.readText(), SavedRates::class.java) }.getOrNull()
-                        ?.takeIf { it.region == region && it.tariffs.isNotEmpty() },
+                        ?.takeIf { it.region == region && it.tariffs.isNotEmpty() && it.version == SAVED_RATES_VERSION },
                     runCatching { gson.fromJson(savedHistory.readText(), SavedHistory::class.java) }.getOrNull()
                         ?.takeIf { it.region == region })
             }
@@ -89,25 +102,52 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
         fillMonthlyEv()
     }
 
-    /** Profiles saved before monthly EV existed: rebuild it from the stored analysis days
-     *  (tariffDays.json) instead of needing a new analysis run. */
+    /** Profiles saved before monthly EV / month-slot kWh existed: rebuild them from the stored
+     *  analysis days (tariffDays.json) instead of needing a new analysis run. */
     private fun fillMonthlyEv() {
         val p = _state.value.profile ?: return
-        if (p.monthlyEv != null) return
+        if (p.monthlyEv != null && p.monthSlotHouse != null && p.monthSlotSolarHouse != null && p.solarCost != null) return
         viewModelScope.launch {
-            val ev = withContext(Dispatchers.Default) {
+            val filled = withContext(Dispatchers.Default) {
                 val saved = TariffHistoryDaysStore(context).load() ?: return@withContext null
                 val slots = com.richw.sunsynk.analysis.SlotProjection(ConfigStore(context).load().evBasisFrom)
                 for ((day, v) in saved.days) {
                     val evWh = DoubleArray(48) { v[48 + it].toDouble() }
                     slots.addDay(day, DoubleArray(48) { v[it] + evWh[it] }, evWh, DoubleArray(48) { v[96 + it].toDouble() })
+                    // days saved since the PV split was added carry it in 144..239
+                    if (v.size >= 240) slots.addSolar(day, DoubleArray(48) { v[144 + it].toDouble() },
+                        DoubleArray(48) { v[192 + it].toDouble() })
                 }
-                slots.monthlyEv(p.ev.sum())
+                val evYear = p.ev.sum()
+                p.copy(monthlyEv = p.monthlyEv ?: slots.monthlyEv(evYear),
+                    monthSlotHouse = if (slots.seasonal) slots.monthSlotHouse() else null,
+                    monthSlotEv = if (slots.seasonal) slots.monthSlotEv(evYear) else null,
+                    monthSlotExport = if (slots.seasonal) slots.monthSlotExport() else null,
+                    monthSlotSolarHouse = p.monthSlotSolarHouse ?: if (slots.seasonal && slots.hasSolar) slots.monthSlotSolarHouse() else null,
+                    monthSlotSolarEv = p.monthSlotSolarEv ?: if (slots.seasonal && slots.hasSolar) slots.monthSlotSolarEv() else null,
+                    solarCost = p.solarCost ?: ConfigStore(context).load().originalPrice)
             } ?: return@launch
             val cur = _state.value.profile
-            if (cur != null && cur.savedAt == p.savedAt) _state.value = _state.value.copy(profile = cur.copy(monthlyEv = ev))
+            if (cur != null && cur.savedAt == p.savedAt) {
+                _state.value = _state.value.copy(profile = filled)
+                reprice()
+            }
         }
     }
+
+    /** Tick / untick an option for the Compare tab; keeps the two most recent. */
+    fun toggleSelect(key: String) {
+        val cur = _state.value.selected
+        _state.value = _state.value.copy(selected = if (key in cur) cur - key else (cur + key).takeLast(2))
+    }
+
+    /** Tick / untick a gas tariff for the Compare tab; keeps the two most recent. */
+    fun toggleGas(key: String) {
+        val cur = _state.value.selectedGas
+        _state.value = _state.value.copy(selectedGas = if (key in cur) cur - key else (cur + key).takeLast(2))
+    }
+
+    fun clearSelection() { _state.value = _state.value.copy(selected = emptyList(), selectedGas = emptyList()) }
 
     /** Re-read the saved profile (after a new analysis run) and re-price what we have. */
     fun reloadProfile() {
@@ -137,6 +177,8 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
                     ?: throw Exception("No region found for that postcode")
                 setRegion(r)
                 _state.value = _state.value.copy(busy = null)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e                    // superseded by a newer request: not an error
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busy = null, error = e.message)
             }
@@ -154,21 +196,27 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
         job = viewModelScope.launch {
             val log = mutableListOf<String>()
             _state.value = _state.value.copy(busy = "Fetching latest rates…", error = null)
+            fun progress(line: String) {
+                synchronized(log) { log.add(line) }
+                if ("seasonal" in line) _state.value = _state.value.copy(busy = "Fetching a year of half-hourly prices… ($line)")
+            }
             try {
                 if (force) File(cacheRoot, java.time.LocalDate.now().toString()).deleteRecursively()
                 cacheRoot.listFiles()?.filter { it.name != TariffHistorySource.HISTORY_DIR &&
                     it.name < java.time.LocalDate.now().minusDays(7).toString() }
                     ?.forEach { it.deleteRecursively() }
-                val src = TariffSources(cacheRoot, log = { synchronized(log) { log.add(it) } })
+                val src = TariffSources(cacheRoot, log = { progress(it) })
                 tariffs = src.fetchAll(region)
                 log.add("${tariffs.size} tariffs: ${src.calls} requests, ${src.hits} from today's cache")
                 _state.value = _state.value.copy(
-                    busy = null, log = log.toList(),
+                    busy = null, error = null, log = log.toList(),
                     fetchedAt = fetchedLabel(),
                 )
-                val saved = SavedRates(region, _state.value.fetchedAt ?: "", tariffs)
+                val saved = SavedRates(region, _state.value.fetchedAt ?: "", tariffs, SAVED_RATES_VERSION)
                 withContext(Dispatchers.IO) { runCatching { savedRates.writeText(gson.toJson(saved)) } }
                 reprice()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e                    // superseded by a newer request: not an error
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busy = null, error = e.message ?: "Fetch failed", log = log.toList())
             }
@@ -211,6 +259,8 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
                 withContext(Dispatchers.IO) {
                     runCatching { savedHistory.writeText(gson.toJson(SavedHistory(region, note, result))) }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e                    // superseded by a newer request: not an error
             } catch (e: Exception) {
                 _state.value = _state.value.copy(historyBusy = null, historyError = e.message ?: "Failed",
                     log = log.toList())
@@ -223,8 +273,8 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
     private fun reprice() {
         val p = _state.value.profile ?: return
         if (tariffs.isEmpty()) return
-        val imports = TariffCompare.compare(tariffs, p.currentImport, p.house, p.ev)
-        val exports = TariffCompare.compareExports(tariffs, p.currentExport, p.export)
+        val imports = TariffCompare.compare(tariffs, p.currentImport, p.house, p.ev, p.monthSlotHouse, p.monthSlotEv)
+        val exports = TariffCompare.compareExports(tariffs, p.currentExport, p.export, p.monthSlotExport)
         _state.value = _state.value.copy(imports = imports, exports = exports,
             pairs = TariffCompare.bestPairs(imports, exports, 8))
         // Gas: the E.ON meter's seasonally weighted year, priced at every gas offer and the latest

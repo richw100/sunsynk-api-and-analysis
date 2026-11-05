@@ -210,18 +210,18 @@ class TariffCompareTest {
             goLike(7.0, 35.0, "23:30-05:30", smart = true, evRate = 7.0).copy(code = "IOG")), cur, house, ev)
         val go = rows.first { it.tariff.code == "GO" }
         assertEquals((1000 * 30 + 2000 * 30 + 100 * 30) / 100.0 + 365 * 0.5, go.asNow, 1e-9)
-        assertEquals((1000 * 30 + 2000 * 9 + 100 * 30) / 100.0 + 365 * 0.5, go.total, 1e-9)
+        assertEquals((1000 * 30 + 2100 * 9) / 100.0 + 365 * 0.5, go.total, 1e-9)   // all EV at the overnight rate
         assertEquals(0.0, go.cheapKwh, 1e-9)
         val iog = rows.first { it.tariff.code == "IOG" }
         assertEquals((1000 * 35 + 2100 * 7) / 100.0 + 365 * 0.5, iog.total, 1e-9)
         assertEquals(rows.map { it.total }.sorted(), rows.map { it.total })
         assertEquals(0.0, rows.first { it.isCurrent }.vsCurrent, 1e-9)
         assertEquals(go.houseCost + go.evRetimed + go.standingYear, go.total, 1e-9)
-        assertEquals(EvSplit(2000.0, 9.0, 100.0, 30.0), go.evSplit)
+        assertEquals(EvSplit(2100.0, 9.0, 0.0, 0.0), go.evSplit)
         assertEquals(EvSplit(2100.0, 7.0, 0.0, 0.0), iog.evSplit)
         val now = rows.first { it.isCurrent }.evSplit
-        assertEquals(EvSplit(2000.0, 3.8, 100.0, 25.63), now)
-        assertEquals(rows.first { it.isCurrent }.evRetimed, (2000 * 3.8 + 100 * 25.63) / 100, 1e-9)
+        assertEquals(EvSplit(2100.0, 3.8, 0.0, 0.0), now)
+        assertEquals(rows.first { it.isCurrent }.evRetimed, 2100 * 3.8 / 100, 1e-9)
     }
 
     @Test
@@ -242,6 +242,36 @@ class TariffCompareTest {
     private fun exp(code: String, income: Double, requires: String? = null, flat: Boolean = false) = ExportRow(
         Tariff("S", code, code, "x", "", List(48) { 1.0 }, 0.0, direction = "EXPORT", requires = requires,
             flatImportOnly = flat), income, "single", "", 0.0)
+
+    @Test
+    fun compareCombinesTickedPairsAndGas() {
+        val pairs = TariffCompare.bestPairs(listOf(imp("CURRENT", "Current", 800.0), imp("OCT", "Octopus", 1000.0),
+            imp("EDF", "EDF", 900.0)), listOf(exp("CURRENT_EXPORT", 300.0), exp("SEG", 100.0)), Int.MAX_VALUE)
+        val cur = TariffCompare.gasOffer("Current", "billed", "CURRENT_GAS", "x", "", 5.0, 34.0)!!
+        val a = TariffCompare.gasOffer("A", "A", "A_GAS", "x", "", 8.0, 30.0)!!
+        val b = TariffCompare.gasOffer("B", "B", "B_GAS", "x", "", 7.0, 25.0)!!
+        val gasRows = TariffCompare.compareGas(listOf(a, b), cur, 10000.0)
+        val overall = TariffCompare.overall(pairs, gasRows, 10000.0)
+        val oct = "OCT|SEG"; val edf = "EDF|SEG"
+        val ga = TariffCompare.gasKey(a); val gb = TariffCompare.gasKey(b)
+        fun cmp(p: List<String>, g: List<String>) = TariffCompare.compareOptions(pairs, overall, gasRows, p, g)
+            .map { Triple(it.pair.imp.tariff.code, it.gas?.tariff?.code, it.total) }
+        // two pairs: their own best gas, one ticked gas for both, or one gas each in tick order
+        assertEquals(listOf("B_GAS", "B_GAS"), cmp(listOf(oct, edf), emptyList()).map { it.second })
+        assertEquals(listOf("A_GAS", "A_GAS"), cmp(listOf(oct, edf), listOf(ga)).map { it.second })
+        assertEquals(listOf("OCT" to "B_GAS", "EDF" to "A_GAS"), cmp(listOf(oct, edf), listOf(gb, ga)).map { it.first to it.second })
+        // a pair and a gas vs today; a pair with two gases; gases only on today's electricity
+        val vsNow = cmp(listOf(oct), listOf(ga))
+        assertEquals(listOf("CURRENT" to "CURRENT_GAS", "OCT" to "A_GAS"), vsNow.map { it.first to it.second })
+        assertEquals(500.0 + TariffCompare.priceGas(cur, 10000.0), vsNow[0].third, 1e-9)
+        assertEquals(900.0 + TariffCompare.priceGas(a, 10000.0), vsNow[1].third, 1e-9)
+        assertEquals(listOf("A_GAS", "B_GAS"), cmp(listOf(oct), listOf(ga, gb)).map { it.second })
+        assertEquals(listOf("CURRENT" to "CURRENT_GAS", "CURRENT" to "B_GAS"), cmp(emptyList(), listOf(gb)).map { it.first to it.second })
+        assertEquals(listOf("CURRENT", "CURRENT"), cmp(emptyList(), listOf(ga, gb)).map { it.first })
+        // not enough ticked
+        assertTrue(cmp(listOf(oct), emptyList()).isEmpty())
+        assertTrue(cmp(emptyList(), emptyList()).isEmpty())
+    }
 
     @Test
     fun bestPairsRespectSupplierAndFlatImportRules() {
@@ -288,5 +318,74 @@ class TariffCompareTest {
         assertEquals(3.8, cur.slotRates[11], 1e-9)
         assertEquals(25.63, cur.slotRates[12], 1e-9)
         assertEquals(13.0, TariffCompare.currentExport(prices, "2026-11-04").slotRates[0], 1e-9)
+    }
+
+    @Test
+    fun dynamicTariffsArePricedMonthByMonth() {
+        val proj = SlotProjection("")
+        // January: 2 kWh/day export at noon; July: 10 kWh/day. One day of each.
+        fun arr(k: Int, kwh: Double) = DoubleArray(48).also { it[k] = kwh * 1000 }
+        proj.addDay("2026-01-15", arr(4, 1.0), arr(4, 0.5), arr(24, 2.0))
+        proj.addDay("2026-07-15", arr(4, 1.0), arr(4, 0.5), arr(24, 10.0))
+        for (m in listOf(2, 3, 4, 5, 6, 8, 9, 10, 11, 12)) proj.addDay("2026-%02d-15".format(m), DoubleArray(48), DoubleArray(48), DoubleArray(48))
+        assertTrue(proj.seasonal)
+        val monthExport = proj.monthSlotExport()
+        assertEquals(proj.annualExport().toList(), (0 until 48).map { k -> monthExport.sumOf { it[k] } })
+        val monthHouse = proj.monthSlotHouse()
+        val monthEv = proj.monthSlotEv(100.0)
+        assertEquals(100.0, monthEv.sumOf { it.sum() }, 1e-9)
+        // Export pays 20p in January but 5p in July: seasonal pricing weights July's bigger export.
+        val ms = List(12) { m -> List(48) { if (m == 6) 5.0 else 20.0 } }
+        val yearly = List(48) { 12.5 }
+        val dyn = Tariff("O", "Agile Out", "AO", "x", "", yearly, 0.0, direction = "EXPORT", monthSlotRates = ms)
+        val seasonal = TariffCompare.priceExport(dyn, proj.annualExport().toList(), monthExport)
+        assertEquals((2.0 * 31 * 20 + 10.0 * 31 * 5) / 100, seasonal, 1e-9)
+        assertEquals(proj.annualExport().sum() * 12.5 / 100, TariffCompare.priceExport(dyn, proj.annualExport().toList()), 1e-9)
+        // Flat month rates give the same import price either way.
+        val flat = Tariff("S", "Flat", "F", "x", "", List(48) { 25.0 }, 50.0, monthSlotRates = List(12) { List(48) { 25.0 } })
+        val cur = Tariff("C", "cur", "CURRENT", "x", "", TariffCompare.touSlotRates(25.0, 5.0, "00:00-06:00"), 50.0, window = "00:00-06:00")
+        val house = proj.annualHouse().toList(); val ev = TariffCompare.annualProfile(proj, house.sum() + 100.0).second
+        val a = TariffCompare.compare(listOf(flat), cur, house, ev).first { it.tariff.code == "F" }
+        val b = TariffCompare.compare(listOf(flat), cur, house, ev, monthHouse, monthEv).first { it.tariff.code == "F" }
+        assertEquals(a.total, b.total, 1e-6)
+    }
+
+    @Test
+    fun monthSlotAveragesFromARateTimeline() {
+        val months = (1..12).map { java.time.YearMonth.of(2026, it) }
+        val rows = months.map { ym ->
+            com.google.gson.JsonObject().apply {
+                addProperty("valid_from", ym.atDay(1).atStartOfDay(java.time.ZoneId.of("Europe/London")).toInstant().toString())
+                addProperty("valid_to", ym.plusMonths(1).atDay(1).atStartOfDay(java.time.ZoneId.of("Europe/London")).toInstant().toString())
+                addProperty("value_inc_vat", ym.monthValue.toDouble())
+            }
+        }
+        val ms = com.richw.sunsynk.api.TariffSources.monthSlotAverages(rows, months)!!
+        assertEquals(List(48) { 1.0 }, ms[0])
+        assertEquals(List(48) { 7.0 }, ms[6])
+        assertEquals(null, com.richw.sunsynk.api.TariffSources.monthSlotAverages(rows.drop(1), months))
+    }
+
+    @Test
+    fun solarRoiValuesSelfUseAtImportRatesCarAtOvernightAndExport() {
+        val cur = Tariff("C", "cur", "CURRENT", "x", "", TariffCompare.touSlotRates(25.0, 5.0, "00:00-06:00"), 50.0, window = "00:00-06:00")
+        val exp = Tariff("C", "exp", "CURRENT_EXPORT", "x", "", List(48) { 13.0 }, 0.0, direction = "EXPORT")
+        val house = List(48) { 0.1 }; val ev = List(48) { 0.0 }; val export = MutableList(48) { 0.0 }.also { it[24] = 100.0 }
+        val imp = TariffCompare.compare(emptyList(), cur, house, ev).first()
+        val ex = TariffCompare.compareExports(emptyList(), exp, export).first()
+        val pair = Pair3(imp, ex)
+        val solarHouse = List(12) { MutableList(48) { 0.0 }.also { it[24] = 10.0 } }   // 120 kWh/yr at noon (peak 25p)
+        val solarEv = List(12) { MutableList(48) { 0.0 }.also { it[26] = 5.0 } }      // 60 kWh/yr into the car
+        val profile = TariffProfile(savedAt = "t", house = house, ev = ev, export = export, monthlyHouse = emptyMap(),
+            monthlyExport = emptyMap(), projectedImportKwh = 0.0, seasonal = true, note = "", currentImport = cur,
+            currentExport = exp, monthSlotSolarHouse = solarHouse, monthSlotSolarEv = solarEv, solarCost = 6000.0)
+        val s = TariffCompare.solarRoi(pair, profile)!!
+        assertEquals(120 * 25 / 100.0, s.selfUse, 1e-9)
+        assertEquals(60 * 5 / 100.0, s.ev, 1e-9)          // overnight rate, not the noon peak
+        assertEquals(100 * 13 / 100.0, s.export, 1e-9)
+        assertEquals(30.0 + 3.0 + 13.0, s.saving, 1e-9)
+        assertEquals(100 * 46.0 / 6000, s.roiPct, 1e-9)
+        assertEquals(6000 / 46.0, s.paybackYears, 1e-9)
+        assertNull(TariffCompare.solarRoi(pair, profile.copy(monthSlotSolarHouse = null)))
     }
 }

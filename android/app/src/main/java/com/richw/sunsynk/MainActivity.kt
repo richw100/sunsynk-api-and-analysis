@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -125,7 +126,9 @@ fun App(
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
                     if (tab == 1) {
-                        TariffsScreen(tariffsVm)
+                        TariffsScreen(tariffsVm, onCompare = { tab = 2 })
+                    } else if (tab == 2) {
+                        com.richw.sunsynk.ui.CompareScreen(tariffsVm)
                     } else {
                         MainScreen(
                             settings = settings,
@@ -162,6 +165,11 @@ fun App(
                     NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
                         icon = { Icon(Icons.AutoMirrored.Filled.CompareArrows, contentDescription = null) },
                         label = { Text("Tariffs") })
+                    val tariffsState by tariffsVm.state.collectAsStateWithLifecycle()
+                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                        enabled = tariffsState.compare.size == 2,
+                        icon = { Icon(Icons.Default.ViewColumn, contentDescription = null) },
+                        label = { Text("Compare") })
                 }
             }
         }
