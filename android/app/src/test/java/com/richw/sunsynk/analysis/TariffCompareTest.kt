@@ -217,6 +217,11 @@ class TariffCompareTest {
         assertEquals(rows.map { it.total }.sorted(), rows.map { it.total })
         assertEquals(0.0, rows.first { it.isCurrent }.vsCurrent, 1e-9)
         assertEquals(go.houseCost + go.evRetimed + go.standingYear, go.total, 1e-9)
+        assertEquals(EvSplit(2000.0, 9.0, 100.0, 30.0), go.evSplit)
+        assertEquals(EvSplit(2100.0, 7.0, 0.0, 0.0), iog.evSplit)
+        val now = rows.first { it.isCurrent }.evSplit
+        assertEquals(EvSplit(2000.0, 3.8, 100.0, 25.63), now)
+        assertEquals(rows.first { it.isCurrent }.evRetimed, (2000 * 3.8 + 100 * 25.63) / 100, 1e-9)
     }
 
     @Test

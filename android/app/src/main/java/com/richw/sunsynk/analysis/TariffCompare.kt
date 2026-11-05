@@ -44,7 +44,12 @@ data class ImportRow(
     val houseCost: Double, val evNow: Double, val evRetimed: Double, val evPPerKwh: Double,
     val standingYear: Double, val asNow: Double, val total: Double, val cheapKwh: Double,
     val rateType: String, val ratesText: String, val vsCurrent: Double,
+    val evSplit: EvSplit = EvSplit(0.0, 0.0, 0.0, 0.0),
 ) { val isCurrent get() = tariff.code == "CURRENT" }
+
+/** Re-timed EV import split into kWh at the tariff's cheapest (or smart-EV) rate and the rest
+ *  at their average rate, so a blended p/kWh can be read as e.g. "1,970 @ 3.80p + 46 @ 25.63p". */
+data class EvSplit(val offKwh: Double, val offRate: Double, val peakKwh: Double, val peakRate: Double)
 
 data class ExportRow(
     val tariff: Tariff, val income: Double, val rateType: String, val ratesText: String,
@@ -59,7 +64,7 @@ data class Pair3(val imp: ImportRow, val exp: ExportRow) {
 data class PairBreakdown(
     val housePeakKwh: Double, val housePeak: Double, val housePeakRate: Double,
     val houseOffKwh: Double, val houseOff: Double, val houseOffRate: Double,
-    val evKwh: Double, val ev: Double, val evRate: Double,
+    val evKwh: Double, val ev: Double, val evRate: Double, val evSplit: EvSplit,
     val standing: Double, val importTotal: Double,
     val exportKwh: Double, val export: Double, val exportRate: Double, val net: Double,
 )
@@ -110,6 +115,7 @@ object TariffCompare {
     private data class Price(
         val houseCost: Double, val evNow: Double, val evRetimed: Double, val evPPerKwh: Double,
         val standingYear: Double, val asNow: Double, val total: Double, val cheapKwh: Double,
+        val evSplit: EvSplit,
     )
 
     private fun price(t: Tariff, house: List<Double>, ev: List<Double>, currentOff: Set<Int>): Price {
@@ -118,17 +124,22 @@ object TariffCompare {
         val standing = 365 * t.standing / 100
         val houseCost = house.indices.sumOf { house[it] * rates[it] } / 100
         val evNow = ev.indices.sumOf { ev[it] * rates[it] } / 100
-        var evRetimed = if (t.smartEv) {
-            ev.sum() * minOf(t.evRate ?: cheapest, cheapest) / 100
-        } else {
-            ev.indices.sumOf { k -> ev[k] * (if (k in currentOff) cheapest else rates[k]) } / 100
+        val evOffRate = if (t.smartEv) minOf(t.evRate ?: cheapest, cheapest) else cheapest
+        // rate each half-hour's EV energy is charged at once re-timed
+        val evRates = ev.indices.map { k ->
+            if (t.smartEv || k in currentOff || rates[k] <= cheapest + 0.005) evOffRate else rates[k]
         }
-        evRetimed = minOf(evNow, evRetimed)
+        val evRetimed = minOf(evNow, ev.indices.sumOf { ev[it] * evRates[it] } / 100)
+        val offIdx = ev.indices.filter { evRates[it] <= evOffRate + 0.005 }
+        val peakIdx = ev.indices.filter { it !in offIdx }
+        val evPeakKwh = peakIdx.sumOf { ev[it] }
+        val evSplit = EvSplit(offIdx.sumOf { ev[it] }, evOffRate, evPeakKwh,
+            if (evPeakKwh > 0) peakIdx.sumOf { ev[it] * evRates[it] } / evPeakKwh else 0.0)
         val cheapSlots = (0 until 48).filter { rates[it] <= cheapest + 0.005 }
         val evKwh = ev.sum()
         return Price(houseCost, evNow, evRetimed, if (evKwh > 0) 100 * evRetimed / evKwh else 0.0,
             standing, houseCost + evNow + standing, houseCost + evRetimed + standing,
-            if (cheapSlots.size < 48) cheapSlots.sumOf { house[it] + ev[it] } else 0.0)
+            if (cheapSlots.size < 48) cheapSlots.sumOf { house[it] + ev[it] } else 0.0, evSplit)
     }
 
     fun priceExport(t: Tariff, export: List<Double>) = export.indices.sumOf { export[it] * t.slotRates[it] } / 100
@@ -168,7 +179,7 @@ object TariffCompare {
             val p = price(t, house, ev, off)
             val (kind, text) = describeRates(t.slotRates)
             ImportRow(t, p.houseCost, p.evNow, p.evRetimed, p.evPPerKwh, p.standingYear, p.asNow, p.total,
-                p.cheapKwh, kind, text, p.total - base)
+                p.cheapKwh, kind, text, p.total - base, p.evSplit)
         }.sortedBy { it.total }
     }
 
@@ -214,7 +225,7 @@ object TariffCompare {
         return PairBreakdown(
             peakKwh, peakCost, if (peakKwh > 0) 100 * peakCost / peakKwh else 0.0,
             offKwh, offCost, if (offKwh > 0) 100 * offCost / offKwh else 0.0,
-            ev.sum(), pair.imp.evRetimed, pair.imp.evPPerKwh,
+            ev.sum(), pair.imp.evRetimed, pair.imp.evPPerKwh, pair.imp.evSplit,
             pair.imp.standingYear, pair.imp.total,
             exportKwh, pair.exp.income, if (exportKwh > 0) 100 * pair.exp.income / exportKwh else 0.0,
             pair.net,

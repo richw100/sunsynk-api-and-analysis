@@ -19,6 +19,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.richw.sunsynk.TariffsUiState
 import com.richw.sunsynk.TariffsViewModel
+import com.richw.sunsynk.analysis.EvSplit
 import com.richw.sunsynk.analysis.ExportRow
 import com.richw.sunsynk.analysis.ImportRow
 import com.richw.sunsynk.analysis.Pair3
@@ -218,6 +219,7 @@ private fun PairCard(pair: Pair3, profile: TariffProfile) {
         Line("House peak", "%,.0f kWh  %s  (%.2fp)".format(b.housePeakKwh, gbp(b.housePeak), b.housePeakRate))
         if (b.houseOffKwh > 0) Line("House off-peak", "%,.0f kWh  %s  (%.2fp)".format(b.houseOffKwh, gbp(b.houseOff), b.houseOffRate))
         Line("EV", "%,.0f kWh  %s  (%.2fp)".format(b.evKwh, gbp(b.ev), b.evRate))
+        evSplitText(b.evSplit)?.let { Line("", it) }
         Line("Standing", gbp(b.standing))
         Line("Import total", gbp(b.importTotal))
         Line("Export", "%,.0f kWh  −%s  (%.2fp)".format(b.exportKwh, gbp(b.export), b.exportRate))
@@ -226,6 +228,13 @@ private fun PairCard(pair: Pair3, profile: TariffProfile) {
         val notes = listOfNotNull(pair.imp.tariff.note.ifBlank { null }, pair.exp.tariff.note.ifBlank { null })
         notes.forEach { Text(it, style = MaterialTheme.typography.labelSmall) }
     }
+}
+
+/** "1,970 kWh @ 3.80p + 46 kWh @ 25.63p"; null when there's no EV energy. */
+private fun evSplitText(s: EvSplit): String? = when {
+    s.offKwh + s.peakKwh < 0.5 -> null
+    s.peakKwh < 0.5 -> "%,.0f kWh @ %.2fp".format(s.offKwh, s.offRate)
+    else -> "%,.0f kWh @ %.2fp + %,.0f kWh @ %.2fp".format(s.offKwh, s.offRate, s.peakKwh, s.peakRate)
 }
 
 @Composable
@@ -245,6 +254,7 @@ private fun ImportCard(r: ImportRow) {
     }) {
         Line("House", gbp(r.houseCost))
         Line("EV as now / re-timed", "${gbp(r.evNow)} / ${gbp(r.evRetimed)}  (%.2fp)".format(r.evPPerKwh))
+        evSplitText(r.evSplit)?.let { Line("", it) }
         Line("Standing charge", gbp(r.standingYear))
         Line("Total (EV as now)", gbp(r.asNow))
         if (r.tariff.note.isNotBlank()) Text(r.tariff.note, style = MaterialTheme.typography.labelSmall)
