@@ -72,12 +72,12 @@ fun TariffsScreen(vm: TariffsViewModel) {
                 }
                 return@LazyColumn
             }
-            item { ProfileCard(profile) }
+            item { ProfileCard(profile, state.gasYear) }
             if (state.overall.isNotEmpty()) {
                 val base = state.overall.firstOrNull { it.pair.isCurrent }?.total
                 item { SectionTitle("Overall: electricity + gas − export",
                     "£/year; gas = the tariff's own (or supplier's) gas, or the cheapest gas anywhere if cheaper") }
-                items(state.overall.take(10) + state.overall.drop(10).filter { it.pair.isCurrent }) { OverallCard(it, base) }
+                items(state.overall.take(10) + state.overall.drop(10).filter { it.pair.isCurrent }) { OverallCard(it, base, profile) }
             }
             if (state.pairs.isNotEmpty()) {
                 item { SectionTitle("Best import + export pairs", "net £/year = import − export; tap for detail") }
@@ -111,7 +111,7 @@ fun TariffsScreen(vm: TariffsViewModel) {
 }
 
 @Composable
-private fun OverallCard(r: OverallRow, base: Double?) {
+private fun OverallCard(r: OverallRow, base: Double?, profile: TariffProfile) {
     val p = r.pair
     Expandable(highlight = p.isCurrent, header = {
         Column(Modifier.weight(1f)) {
@@ -125,14 +125,22 @@ private fun OverallCard(r: OverallRow, base: Double?) {
             if (base != null) Vs(r.total - base, p.isCurrent) else Text("total/yr", style = MaterialTheme.typography.labelSmall)
         }
     }) {
-        Line("Electricity import − export", gbp(p.net))
-        r.own?.let { Line("Gas: ${it.tariff.supplier} ${it.tariff.name}".take(48), "${gbp(it.cost)}  (%.2fp, %.2fp/day)"
-            .format(it.tariff.gasRate, it.tariff.gasStanding)) }
-        r.cheapest?.takeIf { it.tariff.code != r.own?.tariff?.code }?.let {
-            Line("or ${it.tariff.supplier} ${it.tariff.name}".take(48), "${gbp(it.cost)}  (%.2fp, %.2fp/day)"
-                .format(it.tariff.gasRate, it.tariff.gasStanding))
+        PairLines(p, profile)
+        HorizontalDivider(Modifier.padding(vertical = 2.dp))
+        // Each gas option with the total it gives; the card's total is the cheaper one.
+        val options = listOfNotNull(r.own?.let { it to (if (p.isCurrent) "current gas" else "own gas") },
+            r.cheapest?.takeIf { it.tariff.code != r.own?.tariff?.code }?.let { it to "cheapest gas" })
+        val best = options.minByOrNull { it.first.cost }?.first
+        options.forEach { (g, what) ->
+            val used = g === best
+            Text("${if (used) "✓" else "  "} $what: ${g.tariff.supplier} ${g.tariff.name}",
+                style = MaterialTheme.typography.bodySmall, fontWeight = if (used) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Line("     %.2fp/kWh, %.2fp/day: gas %s".format(g.tariff.gasRate, g.tariff.gasStanding, gbp(g.cost)),
+                "total ${gbp(p.net + g.cost)}")
         }
-        Line("Total", gbp(r.total))
+        if (options.size > 1) Text("✓ = the cheaper option, used for the total above. Gas can be with a different " +
+            "supplier from your electricity.", style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -331,14 +339,15 @@ private fun ControlsCard(state: TariffsUiState, vm: TariffsViewModel) {
             }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             state.fetchedAt?.let {
-                Text("Rates fetched at $it (cached for today)", style = MaterialTheme.typography.bodySmall)
+                Text("Rates fetched $it (kept until you fetch again; today's downloads are cached)",
+                    style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
 
 @Composable
-private fun ProfileCard(p: TariffProfile) {
+private fun ProfileCard(p: TariffProfile, gas: GasYear?) {
     val house = p.house.sum()
     val ev = p.ev.sum()
     val export = p.export.sum()
@@ -346,14 +355,19 @@ private fun ProfileCard(p: TariffProfile) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Projected year (analysis run ${p.savedAt})", style = MaterialTheme.typography.titleSmall)
             Text("Import ${"%,.0f".format(house + ev)} kWh = house ${"%,.0f".format(house)} + EV ${"%,.0f".format(ev)}" +
-                "   Export ${"%,.0f".format(export)} kWh", style = MaterialTheme.typography.bodyMedium)
+                "   Export ${"%,.0f".format(export)} kWh" + (gas?.let { "   Gas ${"%,.0f".format(it.kwh)} kWh" } ?: ""),
+                style = MaterialTheme.typography.bodyMedium)
             if (!p.seasonal) Text("Provisional: not all 12 months seen yet", color = bad,
                 style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(4.dp))
             MonthRow("", MONTHS, bold = true)
             MonthRow("Exp", (0 until 12).map { m -> p.monthlyExport[m]?.let { "%.0f".format(it) } ?: "-" })
             MonthRow("House", (0 until 12).map { m -> p.monthlyHouse[m]?.let { "%.0f".format(it) } ?: "-" })
-            Text("kWh, average month (house import excludes the EV)", style = MaterialTheme.typography.bodySmall)
+            p.monthlyEv?.let { ev -> MonthRow("EV", (0 until 12).map { m -> ev[m]?.let { "%.0f".format(it) } ?: "-" }) }
+            gas?.let { g -> MonthRow("Gas", (0 until 12).map { m -> g.monthly[m]?.let { "%.0f".format(it) } ?: "-" }) }
+            Text("kWh, average month (house import excludes the EV" +
+                (if (p.monthlyEv == null) "; re-run the analysis for the EV row" else "") +
+                (if (gas == null) "; download E.ON data for gas" else "") + ")", style = MaterialTheme.typography.bodySmall)
             val cur = p.currentImport
             Text("Current: ${TariffCompare.describeRates(cur.slotRates).second} p/kWh, " +
                 "standing ${"%.2f".format(cur.standing)}p/day; export ${"%.2f".format(p.currentExport.slotRates[0])}p",
@@ -420,6 +434,26 @@ private fun Line(label: String, value: String) {
 }
 
 @Composable
+private fun PairLines(pair: Pair3, profile: TariffProfile) {
+    val b = TariffCompare.pairBreakdown(pair, profile.house, profile.ev, profile.export)
+    Line("Import rates", "${pair.imp.ratesText} p")
+    Line("Standing charge", "%.2fp/day".format(pair.imp.tariff.standing))
+    Line("Export rates", "${pair.exp.ratesText} p")
+    HorizontalDivider(Modifier.padding(vertical = 2.dp))
+    Line("House peak", "%,.0f kWh  %s  (%.2fp)".format(b.housePeakKwh, gbp(b.housePeak), b.housePeakRate))
+    if (b.houseOffKwh > 0) Line("House off-peak", "%,.0f kWh  %s  (%.2fp)".format(b.houseOffKwh, gbp(b.houseOff), b.houseOffRate))
+    Line("EV", "%,.0f kWh  %s  (%.2fp)".format(b.evKwh, gbp(b.ev), b.evRate))
+    evSplitText(b.evSplit)?.let { Line("", it) }
+    Line("Standing", gbp(b.standing))
+    Line("Import total", gbp(b.importTotal))
+    Line("Export", "%,.0f kWh  −%s  (%.2fp)".format(b.exportKwh, gbp(b.export), b.exportRate))
+    Line("Net (electricity)", gbp(b.net))
+    if (pair.exp.tariff.requires != null) Line("Export needs import from", pair.exp.tariff.requires!!)
+    val notes = listOfNotNull(pair.imp.tariff.note.ifBlank { null }, pair.exp.tariff.note.ifBlank { null })
+    notes.forEach { Text(it, style = MaterialTheme.typography.labelSmall) }
+}
+
+@Composable
 private fun PairCard(pair: Pair3, profile: TariffProfile) {
     Expandable(highlight = pair.isCurrent, header = {
         Column(Modifier.weight(1f)) {
@@ -433,22 +467,7 @@ private fun PairCard(pair: Pair3, profile: TariffProfile) {
             Text("net/yr", style = MaterialTheme.typography.labelSmall)
         }
     }) {
-        val b = TariffCompare.pairBreakdown(pair, profile.house, profile.ev, profile.export)
-        Line("Import rates", "${pair.imp.ratesText} p")
-        Line("Standing charge", "%.2fp/day".format(pair.imp.tariff.standing))
-        Line("Export rates", "${pair.exp.ratesText} p")
-        HorizontalDivider(Modifier.padding(vertical = 2.dp))
-        Line("House peak", "%,.0f kWh  %s  (%.2fp)".format(b.housePeakKwh, gbp(b.housePeak), b.housePeakRate))
-        if (b.houseOffKwh > 0) Line("House off-peak", "%,.0f kWh  %s  (%.2fp)".format(b.houseOffKwh, gbp(b.houseOff), b.houseOffRate))
-        Line("EV", "%,.0f kWh  %s  (%.2fp)".format(b.evKwh, gbp(b.ev), b.evRate))
-        evSplitText(b.evSplit)?.let { Line("", it) }
-        Line("Standing", gbp(b.standing))
-        Line("Import total", gbp(b.importTotal))
-        Line("Export", "%,.0f kWh  −%s  (%.2fp)".format(b.exportKwh, gbp(b.export), b.exportRate))
-        Line("Net", gbp(b.net))
-        if (pair.exp.tariff.requires != null) Line("Export needs import from", pair.exp.tariff.requires!!)
-        val notes = listOfNotNull(pair.imp.tariff.note.ifBlank { null }, pair.exp.tariff.note.ifBlank { null })
-        notes.forEach { Text(it, style = MaterialTheme.typography.labelSmall) }
+        PairLines(pair, profile)
     }
 }
 

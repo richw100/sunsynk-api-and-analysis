@@ -119,11 +119,17 @@ class SlotProjection(private val evBasisFrom: String = "") {
     private val monthDays = IntArray(12)
     private val evAll = DoubleArray(48)
     private val evAfter = DoubleArray(48)
+    private val evMonthAll = DoubleArray(12)        // EV import kWh per calendar month, every day
+    private val evMonthAfter = DoubleArray(12)      // ... and only days since evBasisFrom
+    private val afterDays = IntArray(12)
 
     fun addDay(date: String, totalWh: DoubleArray, evWh: DoubleArray, exportWh: DoubleArray? = null) {
         val m = date.substring(5, 7).toInt() - 1
         monthDays[m]++
         val after = evBasisFrom.isNotEmpty() && date >= evBasisFrom
+        val evKwh = evWh.sum() / 1000
+        evMonthAll[m] += evKwh
+        if (after) { evMonthAfter[m] += evKwh; afterDays[m]++ }
         for (k in 0 until 48) {
             house[m][k] += (totalWh[k] - evWh[k]) / 1000
             evAll[k] += evWh[k] / 1000
@@ -150,6 +156,23 @@ class SlotProjection(private val evBasisFrom: String = "") {
     fun monthly(): Map<Int, Pair<Double, Double>> = (0 until 12).filter { monthDays[it] > 0 }.associateWith { m ->
         Pair(house[m].sum() / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m],
             export[m].sum() / monthDays[m] * SeasonalProjection.DAYS_IN_MONTH[m])
+    }
+
+    /** EV import for an average such month, scaled so the months sum to [evYear] (the rebased EV
+     *  year): months seen since evBasisFrom use those days; earlier-only months use all days
+     *  times the after/all ratio over months that have both (as rebasedAnnualEv). */
+    fun monthlyEv(evYear: Double): Map<Int, Double> {
+        val dim = SeasonalProjection.DAYS_IN_MONTH
+        val shared = (0 until 12).filter { afterDays[it] > 0 && monthDays[it] > afterDays[it] }
+        val allPerDay = { m: Int -> evMonthAll[m] / monthDays[m] }
+        val afterPerDay = { m: Int -> evMonthAfter[m] / afterDays[m] }
+        val ratio = if (shared.isEmpty()) 1.0 else shared.sumOf { afterPerDay(it) } / shared.sumOf { allPerDay(it) }
+            .takeIf { it > 0 }.let { it ?: 1.0 }
+        val raw = (0 until 12).filter { monthDays[it] > 0 }.associateWith { m ->
+            (if (afterDays[m] > 0) afterPerDay(m) else allPerDay(m) * (if (evBasisFrom.isEmpty()) 1.0 else ratio)) * dim[m]
+        }
+        val total = raw.values.sum()
+        return if (total > 0) raw.mapValues { it.value * evYear / total } else raw
     }
 
     /** Fraction of EV import in each slot (sums to 1, or all 0 without EV data). */

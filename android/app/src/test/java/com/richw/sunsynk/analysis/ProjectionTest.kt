@@ -93,4 +93,20 @@ class ProjectionTest {
         val r = rebasedAnnualEv(SeasonalProjection(), evProj(mapOf(6 to 10.0, 7 to 10.0)))
         assertEquals(365 * 10.0, r.kwh["ev_peak"]!! + r.kwh["ev_off_peak"]!!, 1e-6)
     }
+
+    @Test
+    fun slotProjectionMonthlyEvRebasedAndScaledToTheEvYear() {
+        val p = SlotProjection("2026-05-01")
+        fun day(ev: Double) = DoubleArray(48).also { it[2] = ev * 1000 }
+        p.addDay("2025-06-10", day(5.0), day(5.0))     // June seen before and after the basis
+        p.addDay("2026-06-10", day(10.0), day(10.0))
+        p.addDay("2025-12-10", day(4.0), day(4.0))     // December only before it
+        val m = p.monthlyEv(1000.0)
+        assertEquals(1000.0, m.values.sum(), 1e-9)
+        // June uses its after-basis day (10/day); December 4/day x (after/all June ratio 10/7.5)
+        val junRaw = 10.0 * 30
+        val decRaw = 4.0 * (10.0 / 7.5) * 31
+        assertEquals(1000.0 * junRaw / (junRaw + decRaw), m.getValue(5), 1e-9)
+        assertEquals(1000.0 * decRaw / (junRaw + decRaw), m.getValue(11), 1e-9)
+    }
 }

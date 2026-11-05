@@ -46,6 +46,7 @@ data class TariffProfile(
     val export: List<Double>,
     val monthlyHouse: Map<Int, Double>,   // average month, kWh (months seen only)
     val monthlyExport: Map<Int, Double>,
+    val monthlyEv: Map<Int, Double>? = null, // average month, kWh (null in profiles saved before it)
     val projectedImportKwh: Double,       // PROJECTED YEARLY IMPORT, for the cross-check
     val seasonal: Boolean,
     val note: String,

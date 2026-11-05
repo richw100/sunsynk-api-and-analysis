@@ -353,6 +353,7 @@ class AnalysisViewModel(private val context: Context) : ViewModel() {
             house = house, ev = ev, export = slots.annualExport().toList(),
             monthlyHouse = monthly.mapValues { it.value.first },
             monthlyExport = monthly.mapValues { it.value.second },
+            monthlyEv = slots.monthlyEv(ev.sum()),
             projectedImportKwh = annualImport,
             seasonal = slots.seasonal,
             note = prices.projectionNote(),

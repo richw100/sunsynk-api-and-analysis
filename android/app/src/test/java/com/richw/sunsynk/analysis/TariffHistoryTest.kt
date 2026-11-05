@@ -127,4 +127,16 @@ class TariffHistoryTest {
         assertEquals(mapOf("Gap" to 1), r.skipped)
         assertTrue(r.kwh.isEmpty())
     }
+
+    @Test
+    fun historyResultSurvivesAGsonRoundTrip() {
+        val r = TariffHistory.priceHistory(mapOf("2026-05-01" to day(), "2026-05-02" to day()), periods,
+            listOf(flat("Flat", 20.0), flat("Out", 10.0, 0.0, "EXPORT", "Octopus")))
+        val gson = com.google.gson.Gson()
+        val back = gson.fromJson(gson.toJson(r), HistoryResult::class.java)
+        assertEquals(r.months, back.months)
+        assertEquals(TariffHistory.bestPairs(r, r.months).map { it.net }, TariffHistory.bestPairs(back, back.months).map { it.net })
+        assertEquals(r.imports.getValue("Flat").getValue("2026-05").total,
+            back.imports.getValue("Flat").getValue("2026-05").total, 1e-9)
+    }
 }

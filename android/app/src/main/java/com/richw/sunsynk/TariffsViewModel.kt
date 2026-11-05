@@ -61,17 +61,71 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
 
     private val _state = MutableStateFlow(TariffsUiState(region = prefs.tariffRegion, profile = profiles.load()))
     val state = _state.asStateFlow()
+    private val gson = com.google.gson.Gson()
+    private val savedRates = File(context.filesDir, "tariffsLatest.json")
+    private val savedHistory = File(context.filesDir, "tariffHistoryResult.json")
+
+    private data class SavedRates(val region: String, val fetchedAt: String, val tariffs: List<Tariff>)
+    private data class SavedHistory(val region: String, val note: String, val result: HistoryResult)
+
+    init {
+        // The last fetched rates and the last history result, so the tab is ready without re-fetching.
+        viewModelScope.launch {
+            val region = _state.value.region
+            val (rates, history) = withContext(Dispatchers.IO) {
+                Pair(runCatching { gson.fromJson(savedRates.readText(), SavedRates::class.java) }.getOrNull()
+                        ?.takeIf { it.region == region && it.tariffs.isNotEmpty() },
+                    runCatching { gson.fromJson(savedHistory.readText(), SavedHistory::class.java) }.getOrNull()
+                        ?.takeIf { it.region == region })
+            }
+            if (rates != null && tariffs.isEmpty()) {
+                tariffs = rates.tariffs
+                _state.value = _state.value.copy(fetchedAt = rates.fetchedAt)
+                reprice()
+            }
+            if (history != null && _state.value.history == null)
+                _state.value = _state.value.copy(history = history.result, historyNote = history.note)
+        }
+        fillMonthlyEv()
+    }
+
+    /** Profiles saved before monthly EV existed: rebuild it from the stored analysis days
+     *  (tariffDays.json) instead of needing a new analysis run. */
+    private fun fillMonthlyEv() {
+        val p = _state.value.profile ?: return
+        if (p.monthlyEv != null) return
+        viewModelScope.launch {
+            val ev = withContext(Dispatchers.Default) {
+                val saved = TariffHistoryDaysStore(context).load() ?: return@withContext null
+                val slots = com.richw.sunsynk.analysis.SlotProjection(ConfigStore(context).load().evBasisFrom)
+                for ((day, v) in saved.days) {
+                    val evWh = DoubleArray(48) { v[48 + it].toDouble() }
+                    slots.addDay(day, DoubleArray(48) { v[it] + evWh[it] }, evWh, DoubleArray(48) { v[96 + it].toDouble() })
+                }
+                slots.monthlyEv(p.ev.sum())
+            } ?: return@launch
+            val cur = _state.value.profile
+            if (cur != null && cur.savedAt == p.savedAt) _state.value = _state.value.copy(profile = cur.copy(monthlyEv = ev))
+        }
+    }
 
     /** Re-read the saved profile (after a new analysis run) and re-price what we have. */
     fun reloadProfile() {
-        _state.value = _state.value.copy(profile = profiles.load())
+        val loaded = profiles.load()
+        if (loaded?.savedAt != _state.value.profile?.savedAt) {
+            _state.value = _state.value.copy(profile = loaded)
+            fillMonthlyEv()
+        }
         reprice()
     }
 
     fun setRegion(region: String) {
         val r = region.trim().uppercase().trimStart('_')
+        if (r == _state.value.region) return
         prefs.tariffRegion = r
-        _state.value = _state.value.copy(region = r)
+        tariffs = emptyList()          // rates and history are per region: fetch again for the new one
+        _state.value = _state.value.copy(region = r, fetchedAt = null, imports = emptyList(), exports = emptyList(),
+            pairs = emptyList(), overall = emptyList(), gasRows = emptyList(), history = null, historyNote = null)
     }
 
     fun lookupPostcode(postcode: String) {
@@ -110,8 +164,10 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
                 log.add("${tariffs.size} tariffs: ${src.calls} requests, ${src.hits} from today's cache")
                 _state.value = _state.value.copy(
                     busy = null, log = log.toList(),
-                    fetchedAt = java.time.LocalTime.now().withNano(0).withSecond(0).toString(),
+                    fetchedAt = fetchedLabel(),
                 )
+                val saved = SavedRates(region, _state.value.fetchedAt ?: "", tariffs)
+                withContext(Dispatchers.IO) { runCatching { savedRates.writeText(gson.toJson(saved)) } }
                 reprice()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busy = null, error = e.message ?: "Fetch failed", log = log.toList())
@@ -150,14 +206,19 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
                 val skipped = if (result.skipped.isEmpty()) "" else
                     "; left out: " + result.skipped.entries.joinToString { "${it.key} ${it.value}" }
                 log.add("${tariffs.size} tariffs: ${src.calls} requests, ${src.hits} from cache")
-                _state.value = _state.value.copy(historyBusy = null, history = result, log = log.toList(),
-                    historyNote = "$days days, $start to $stop (analysis run ${saved.savedAt})$skipped")
+                val note = "$days days, $start to $stop (analysis run ${saved.savedAt}; priced ${fetchedLabel()})$skipped"
+                _state.value = _state.value.copy(historyBusy = null, history = result, log = log.toList(), historyNote = note)
+                withContext(Dispatchers.IO) {
+                    runCatching { savedHistory.writeText(gson.toJson(SavedHistory(region, note, result))) }
+                }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(historyBusy = null, historyError = e.message ?: "Failed",
                     log = log.toList())
             }
         }
     }
+
+    private fun fetchedLabel() = java.time.LocalDateTime.now().withNano(0).withSecond(0).toString().replace('T', ' ')
 
     private fun reprice() {
         val p = _state.value.profile ?: return
