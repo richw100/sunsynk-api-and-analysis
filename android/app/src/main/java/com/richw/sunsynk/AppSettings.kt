@@ -464,6 +464,15 @@ class DataSourceStore(private val context: Context) {
 
     val fuseDir get() = File(context.filesDir, "fuseenergydata")
     val indraDir get() = File(context.filesDir, "indraData")
+    val eonDir get() = File(context.filesDir, "eonData")
+
+    /** E.ON Next Auth0 session. Its refresh token is single-use (each refresh returns a new one
+     *  and an old one is then rejected), so a session can't be shared with the desktop
+     *  eondata.py: each device signs in on its own. */
+    var eonTokens: com.richw.sunsynk.api.EonTokens
+        get() = com.richw.sunsynk.api.EonTokens(prefs.getString("eon_id_token", "") ?: "",
+            prefs.getString("eon_refresh_token", "") ?: "")
+        set(v) = prefs.edit().putString("eon_id_token", v.idToken).putString("eon_refresh_token", v.refreshToken).apply()
 
     var fusePhone: String
         get() = prefs.getString("fuse_phone", "") ?: ""

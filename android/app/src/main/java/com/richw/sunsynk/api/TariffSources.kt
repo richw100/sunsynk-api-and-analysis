@@ -55,7 +55,39 @@ class TariffSources(
         const val GSP_URL = "https://api.octopus.energy/v1/industry/grid-supply-points/"
 
         val EXCLUDE = Regex("EXPORT|OUTGOING|SEG|ZERO|TEST|EMPLOYEE|ENGAGE|POWER.PACK|PODPOINT|POD.POINT|" +
-            "HEAT.PUMP|COSY|SNUG|FLUX|_GAS|PREPAY|PARTNER|SAMSUNG|-OEV-", RegexOption.IGNORE_CASE)
+            "HEAT.PUMP|COSY|SNUG|FLUX|_GAS|PREPAY|PARTNER|SAMSUNG|-OEV-|OPTIMISE", RegexOption.IGNORE_CASE)
+        // E.ON Next Optimise needs solar *and* a home battery.
+        val GAS_EXCLUDE = Regex("EXPORT|OUTGOING|SEG|ZERO|TEST|EMPLOYEE|ENGAGE|POWER.PACK|HEAT.PUMP|COSY|SNUG|" +
+            "FLUX|PREPAY|PARTNER|OPTIMISE", RegexOption.IGNORE_CASE)
+
+        /** Code without its gas marker: E.ON's NEXT_DRIVE_FIXED_GAS_V37 <-> NEXT_DRIVE_FIXED_V37. */
+        fun gasCodeKey(code: String) = code.replace(Regex("(?i)[-_]GAS(?=[-_]|$)"), "")
+
+        /** (rate, standing) of a Kraken product detail's Direct Debit (or 'varying') gas tariff. */
+        fun krakenGas(detail: JsonObject, region: String): Pair<Double?, Double?> {
+            val byPayment = detail.getAsJsonObject("single_register_gas_tariffs")?.getAsJsonObject("_$region")
+                ?: return Pair(null, null)
+            val t = byPayment.getAsJsonObject("direct_debit_monthly") ?: byPayment.getAsJsonObject("varying")
+                ?: return Pair(null, null)
+            fun d(k: String) = t.get(k)?.takeUnless { it.isJsonNull }?.asDouble
+            return Pair(d("standard_unit_rate_inc_vat"), d("standing_charge_inc_vat"))
+        }
+
+        /** Each import tariff's gas filled from a same-supplier gas product with the same code,
+         *  and every bundled gas listed once as a GAS tariff. */
+        fun linkGas(tariffs: List<Tariff>): List<Tariff> {
+            val gas = tariffs.filter { it.direction == "GAS" }
+            val byKey = gas.associateBy { it.supplier to gasCodeKey(it.code) }
+            val linked = tariffs.map {
+                if (it.direction == "IMPORT" && it.gas == null) it.copy(gas = byKey[it.supplier to gasCodeKey(it.code)]) else it
+            }
+            val seen = gas.map { it.supplier to it.code }.toMutableSet()
+            val extra = linked.mapNotNull { t ->
+                val g = t.gas?.takeIf { t.direction == "IMPORT" && !t.code.endsWith("+CA") } ?: return@mapNotNull null
+                if (seen.add(g.supplier to g.code)) g else null
+            }
+            return linked + extra
+        }
         val EXPORT_EXCLUDE = Regex("ZERO|POWER.PACK|FLUX|TEST|NEXT_EXPORT_PREMIUM", RegexOption.IGNORE_CASE)
         val EXPORT_FLAT_IMPORT_ONLY = Regex("NEXT_EXPORT_EXCLUSIVE", RegexOption.IGNORE_CASE)
         val EXPORT_REQUIRES = listOf(
@@ -177,6 +209,10 @@ class TariffSources(
             }
             val std = find("standard-rate")
             val e7 = if (std == null) find("Economy 7") else null
+            val gasRow = tables.entries.firstNotNullOfOrNull { (title, rows) ->
+                if (!title.startsWith("Dual Fuel, Monthly Direct Debit") || rows.isEmpty()) null
+                else rows.drop(1).firstOrNull { it.isNotEmpty() && it[0].trim().lowercase() in names }?.let { rows[0].zip(it).toMap() }
+            }
             val row = std ?: e7 ?: return Pair(null, "no Monthly Direct Debit electricity row for this region")
             val months = num(row["Contract"])
             val lname = name.lowercase()
@@ -189,12 +225,14 @@ class TariffSources(
             val standing = num(row["Elec standing (p/day)"])
             val peak = num(row["Elec rate (p/kWh)"])
             if (peak == null || standing == null) return Pair(null, "unreadable row")
-            if (std != null) return Pair(Tariff(supplier, name, slug, "energyplus.co.uk", kind, List(48) { peak }, standing), null)
+            val gas = gasRow?.let { TariffCompare.gasOffer(supplier, name, slug, "energyplus.co.uk", kind,
+                num(it["Gas rate (p/kWh)"]), num(it["Gas standing (p/day)"])) }
+            if (std != null) return Pair(Tariff(supplier, name, slug, "energyplus.co.uk", kind, List(48) { peak }, standing, gas = gas), null)
             val window = WINDOWS.firstOrNull { it.first.containsMatchIn(name) }?.second
                 ?: return Pair(null, "Economy 7 only and no off-peak window known")
             val off = num(row["E7 off-peak (p/kWh)"]) ?: return Pair(null, "no off-peak rate")
             return Pair(Tariff(supplier, name, slug, "energyplus.co.uk", kind,
-                TariffCompare.touSlotRates(peak, off, window), standing, note = "off-peak window $window assumed"), null)
+                TariffCompare.touSlotRates(peak, off, window), standing, note = "off-peak window $window assumed", gas = gas), null)
         }
 
         /** (title, rows) from an everviz table 'inject' script. */
@@ -331,11 +369,13 @@ class TariffSources(
             kind = if (variable) "variable" else if (term != null) "fixed ${term}m" else "fixed",
             slotRates = emptyList(), standing = 0.0, smartEv = SMART_EV.containsMatchIn(code),
         )
+        val (gasRate, gasSc) = krakenGas(detail, region)
+        val ownGas = if (export) null else TariffCompare.gasOffer(base.supplier, name, code, base.source, base.kind, gasRate, gasSc)
         fun dd(key: String) = detail.getAsJsonObject(key)?.getAsJsonObject("_$region")?.getAsJsonObject("direct_debit_monthly")
         val single = (detail.get("single_register_electricity_tariffs") as? JsonObject)?.let { dd("single_register_electricity_tariffs") }
         if (single != null) {
             val slots = unitRateSlots(single, product) ?: return null
-            val t = base.copy(slotRates = slots, standing = single.get("standing_charge_inc_vat").asDouble)
+            val t = base.copy(slotRates = slots, standing = single.get("standing_charge_inc_vat").asDouble, gas = ownGas)
             if (!export) return t
             val requires = EXPORT_REQUIRES.firstOrNull { it.first.containsMatchIn(code) }?.second
             val flat = EXPORT_FLAT_IMPORT_ONLY.containsMatchIn(code)
@@ -353,8 +393,36 @@ class TariffSources(
             ?: return null
         val evOff = ev4.get("ev_device_off_peak_unit_rate_inc_vat")?.takeUnless { it.isJsonNull }?.asDouble
         return base.copy(slotRates = TariffCompare.touSlotRates(day, night, window),
-            standing = ev4.get("standing_charge_inc_vat").asDouble, smartEv = evOff != null || base.smartEv,
+            standing = ev4.get("standing_charge_inc_vat").asDouble, smartEv = evOff != null || base.smartEv, gas = ownGas,
             evRate = evOff, note = "off-peak $window (from description); smart-charged EV at its EV rate")
+    }
+
+    /** Current gas tariffs from one Kraken host: the newest version of every product family
+     *  (gas-only products included) with a Direct Debit gas tariff for the region. */
+    suspend fun krakenGasOffers(label: String, host: String, region: String): List<Tariff> = coroutineScope {
+        val products = pages("$host/v1/products/?page_size=500")
+        val latest = linkedMapOf<String, JsonObject>()
+        for (p in products) {
+            if (p.get("is_business")?.asBoolean == true || p.get("is_prepay")?.asBoolean == true || isExport(p)) continue
+            val code = p.get("code").asString
+            if (GAS_EXCLUDE.containsMatchIn(code) || GAS_EXCLUDE.containsMatchIn(str(p, "full_name") ?: "")) continue
+            val fam = "${str(p, "brand")}|${familyKey(code)}"
+            val prev = latest[fam]
+            if (prev == null || (str(p, "available_from") ?: "") > (str(prev, "available_from") ?: "")) latest[fam] = p
+        }
+        latest.values.map { p ->
+            async {
+                runCatching {
+                    val code = p.get("code").asString
+                    val detail = getJson("$host/v1/products/$code/")
+                    val term = p.get("term")?.takeUnless { it.isJsonNull }?.asInt
+                    val kind = if (p.get("is_variable")?.asBoolean == true) "variable" else if (term != null) "fixed ${term}m" else "fixed"
+                    val (rate, sc) = krakenGas(detail, region)
+                    TariffCompare.gasOffer(BRANDS[str(p, "brand") ?: ""] ?: label,
+                        str(detail, "display_name") ?: str(p, "display_name") ?: code, code, host.substringAfter("//"), kind, rate, sc)
+                }.getOrNull()
+            }
+        }.awaitAll().filterNotNull()
     }
 
     private suspend fun unitRateSlots(tariff: JsonObject, product: JsonObject): List<Double>? {
@@ -397,13 +465,18 @@ class TariffSources(
     suspend fun ofgemCap(region: String): Tariff? {
         val page = getText(OFGEM_CAP_URL)
         val ids = Regex("everviz\\.com/inject/([A-Za-z0-9_-]+)").findAll(page).map { it.groupValues[1] }.toSortedSet()
+        var elec: Tariff? = null
+        var gasRows: List<List<String>>? = null
         for (id in ids) {
             val (title, rows) = parseEvervizTable(getText("https://app.everviz.com/inject/$id/"))
             val t = title.lowercase()
             if (t.startsWith("electricity") && "direct debit" in t && "single rate" in t && rows.isNotEmpty())
-                return priceCapTariff(rows, region)
+                elec = priceCapTariff(rows, region)
+            else if (t.startsWith("gas") && "direct debit" in t && rows.isNotEmpty()) gasRows = rows
         }
-        throw Exception("Direct Debit single-rate table not found on the Ofgem page")
+        val e = elec ?: throw Exception("Direct Debit single-rate table not found on the Ofgem page")
+        val g = gasRows?.let { priceCapTariff(it, region) }
+        return e.copy(gas = g?.let { TariffCompare.gasOffer(e.supplier, e.name, e.code, e.source, e.kind, it.slotRates[0], it.standing) })
     }
 
     /** Every source; a failing one is logged and skipped. */
@@ -415,6 +488,7 @@ class TariffSources(
             try {
                 out += krakenTariffs(label, host, r, export = false)
                 out += krakenTariffs(label, host, r, export = true)
+                out += krakenGasOffers(label, host, r)
             } catch (e: Exception) { log("$label failed: ${e.message}") }
         }
         try { out += energyplusTariffs(r) } catch (e: Exception) { log("energyplus failed: ${e.message}") }
@@ -430,6 +504,6 @@ class TariffSources(
                     note = "EV smart-charged at ${rate}p (compatible car/charger needed)")
             }
         } catch (e: Exception) { log("OVO Charge Anytime failed: ${e.message}") }
-        return out
+        return linkGas(out)
     }
 }

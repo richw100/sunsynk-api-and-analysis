@@ -24,6 +24,9 @@ import com.richw.sunsynk.analysis.HistPair
 import com.richw.sunsynk.analysis.HistoryResult
 import com.richw.sunsynk.analysis.TariffHistory
 import com.richw.sunsynk.analysis.ExportRow
+import com.richw.sunsynk.analysis.GasRow
+import com.richw.sunsynk.analysis.GasYear
+import com.richw.sunsynk.analysis.OverallRow
 import com.richw.sunsynk.analysis.ImportRow
 import com.richw.sunsynk.analysis.Pair3
 import com.richw.sunsynk.analysis.TariffCompare
@@ -70,6 +73,12 @@ fun TariffsScreen(vm: TariffsViewModel) {
                 return@LazyColumn
             }
             item { ProfileCard(profile) }
+            if (state.overall.isNotEmpty()) {
+                val base = state.overall.firstOrNull { it.pair.isCurrent }?.total
+                item { SectionTitle("Overall: electricity + gas − export",
+                    "£/year; gas = the tariff's own (or supplier's) gas, or the cheapest gas anywhere if cheaper") }
+                items(state.overall.take(10) + state.overall.drop(10).filter { it.pair.isCurrent }) { OverallCard(it, base) }
+            }
             if (state.pairs.isNotEmpty()) {
                 item { SectionTitle("Best import + export pairs", "net £/year = import − export; tap for detail") }
                 items(state.pairs) { PairCard(it, profile) }
@@ -88,7 +97,73 @@ fun TariffsScreen(vm: TariffsViewModel) {
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
+            state.gasYear?.let { g ->
+                item { GasYearCard(g) }
+                item { SectionTitle("Gas tariffs", "£/year = kWh × unit rate + 365 × standing charge") }
+                items(state.gasRows.take(15) + state.gasRows.drop(15).filter { it.isCurrent }) { GasCard(it) }
+            } ?: item {
+                Text("Gas: sign in to E.ON Next under Data sources and download, to add gas to the comparison.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
             if (state.log.isNotEmpty()) item { LogCard(state.log) }
+        }
+    }
+}
+
+@Composable
+private fun OverallCard(r: OverallRow, base: Double?) {
+    val p = r.pair
+    Expandable(highlight = p.isCurrent, header = {
+        Column(Modifier.weight(1f)) {
+            Text("${p.imp.tariff.supplier} ${p.imp.tariff.name}", style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("+ ${p.exp.tariff.supplier} ${p.exp.tariff.name}", style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(gbp(r.total), fontWeight = FontWeight.Bold)
+            if (base != null) Vs(r.total - base, p.isCurrent) else Text("total/yr", style = MaterialTheme.typography.labelSmall)
+        }
+    }) {
+        Line("Electricity import − export", gbp(p.net))
+        r.own?.let { Line("Gas: ${it.tariff.supplier} ${it.tariff.name}".take(48), "${gbp(it.cost)}  (%.2fp, %.2fp/day)"
+            .format(it.tariff.gasRate, it.tariff.gasStanding)) }
+        r.cheapest?.takeIf { it.tariff.code != r.own?.tariff?.code }?.let {
+            Line("or ${it.tariff.supplier} ${it.tariff.name}".take(48), "${gbp(it.cost)}  (%.2fp, %.2fp/day)"
+                .format(it.tariff.gasRate, it.tariff.gasStanding))
+        }
+        Line("Total", gbp(r.total))
+    }
+}
+
+@Composable
+private fun GasYearCard(g: GasYear) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Projected gas year", style = MaterialTheme.typography.titleSmall)
+            Text("${"%,.0f".format(g.kwh)} kWh from ${g.days} days of E.ON meter data", style = MaterialTheme.typography.bodyMedium)
+            if (!g.seasonal) Text("Provisional: not all 12 months seen yet", color = bad, style = MaterialTheme.typography.bodySmall)
+            MonthRow("", MONTHS, bold = true)
+            MonthRow("Gas", (0 until 12).map { m -> g.monthly[m]?.let { "%.0f".format(it) } ?: "-" })
+        }
+    }
+}
+
+@Composable
+private fun GasCard(r: GasRow) {
+    Card(Modifier.fillMaxWidth(), colors = if (r.isCurrent)
+        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer) else CardDefaults.cardColors()) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("${r.tariff.supplier} ${r.tariff.name}", style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("%.2fp/kWh · %.2fp/day · ${r.tariff.kind}".format(r.tariff.gasRate, r.tariff.gasStanding),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(gbp(r.cost), fontWeight = FontWeight.Bold)
+                Vs(r.vsCurrent, r.isCurrent)
+            }
         }
     }
 }

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonParser
+import com.richw.sunsynk.api.EonAuthException
+import com.richw.sunsynk.api.EonClient
 import com.richw.sunsynk.api.FuseAuthException
 import com.richw.sunsynk.api.FuseClient
 import com.richw.sunsynk.api.IndraAuthException
@@ -36,6 +38,11 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
     val fuse = _fuse.asStateFlow()
     private val _indra = MutableStateFlow(SourceUi())
     val indra = _indra.asStateFlow()
+    private val _eon = MutableStateFlow(SourceUi())
+    val eon = _eon.asStateFlow()
+
+    // The sign-in attempt in progress: its PKCE verifier and state (never stored).
+    private var eonPkce: Triple<String, String, String>? = null      // verifier, state, url
 
     val fusePhone get() = store.fusePhone
     val indraEmail get() = store.indraSession.email
@@ -54,6 +61,57 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
             },
             summary = indraSummary(),
         )
+        _eon.value = SourceUi(
+            step = if (store.eonTokens.refreshToken.isNotEmpty()) SignInStep.SIGNED_IN else SignInStep.SIGNED_OUT,
+            summary = eonSummary(),
+        )
+    }
+
+    private fun eonClient() = EonClient(store.eonDir, store.eonTokens, onTokens = { store.eonTokens = it })
+
+    private fun eonSummary(): String {
+        val parts = EonClient.KINDS.mapNotNull { kind ->
+            val daily = runCatching { EonClient.loadDailyKwh(store.eonDir, kind) }.getOrDefault(emptyMap())
+            if (daily.isEmpty()) null else "$kind ${"%,.0f".format(daily.values.sum())} kWh"
+        }
+        val days = runCatching { EonClient.loadDailyKwh(store.eonDir, "import") }.getOrDefault(emptyMap())
+        if (parts.isEmpty()) return "No meter data downloaded yet"
+        return "${days.keys.minOrNull()} to ${days.keys.maxOrNull()}: " + parts.joinToString(", ")
+    }
+
+    /** A fresh Auth0 sign-in URL (PKCE); the WebView loads it and hands back the redirect. */
+    fun eonSignInUrl(): String {
+        val (verifier, challenge) = EonClient.pkcePair()
+        val state = java.util.UUID.randomUUID().toString()
+        val url = EonClient.authorizeUrl(challenge, state)
+        eonPkce = Triple(verifier, state, url)
+        return url
+    }
+
+    /** The WebView (or a pasted URL) reached the E.ON app's callback: exchange the code. */
+    fun eonFinish(callbackUrl: String) = run(_eon) {
+        val (verifier, state, _) = eonPkce ?: throw EonAuthException("Start the sign-in first")
+        val code = EonClient.parseCallback(callbackUrl, state)
+        eonClient().exchangeCode(code, verifier)
+        eonPkce = null
+        _eon.value.copy(busy = false, step = SignInStep.SIGNED_IN, message = "Signed in to E.ON Next")
+    }
+
+    fun eonDownload() = run(_eon) {
+        val client = eonClient()
+        try {
+            client.ensureToken()
+        } catch (e: EonAuthException) {
+            store.eonTokens = com.richw.sunsynk.api.EonTokens()
+            return@run _eon.value.copy(busy = false, step = SignInStep.SIGNED_OUT,
+                error = "E.ON session has expired — sign in again")
+        }
+        val months = client.collect { p -> _eon.value = _eon.value.copy(progress = p) }
+        _eon.value = _eon.value.copy(progress = "Bills…")
+        val charges = client.tariffs()
+        _eon.value.copy(busy = false, progress = "", summary = eonSummary(),
+            message = "${months.size} months (${client.fetched} requests, ${client.cached} months from cache), " +
+                "${charges.size} bills")
     }
 
     private fun fuseClient() = FuseClient(store.fuseDir, store.fuseCookies, onCookies = { store.fuseCookies = it })
@@ -95,6 +153,8 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
                 throw e
             } catch (e: FuseAuthException) {
                 flow.value.copy(busy = false, step = SignInStep.SIGNED_OUT, error = e.message, progress = "")
+            } catch (e: EonAuthException) {
+                flow.value.copy(busy = false, error = e.message, progress = "")
             } catch (e: IndraAuthException) {
                 flow.value.copy(busy = false, error = e.message, progress = "")
             } catch (e: Exception) {

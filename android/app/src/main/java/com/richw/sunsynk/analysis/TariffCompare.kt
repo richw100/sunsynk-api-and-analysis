@@ -22,7 +22,21 @@ data class Tariff(
     val requires: String? = null,         // export: supplier whose import tariff it needs
     val flatImportOnly: Boolean = false,  // export: not with time-of-use import tariffs
     val window: String = "",              // current tariff only: its off-peak window
+    val gasRate: Double? = null,          // direction GAS: p/kWh inc VAT
+    val gasStanding: Double? = null,      // direction GAS: p/day
+    val gas: Tariff? = null,              // import: its own / matching gas tariff (direction GAS)
 )
+
+/** A seasonally weighted gas year: each calendar month's average day x its length. */
+data class GasYear(val kwh: Double, val monthly: Map<Int, Double>, val seasonal: Boolean, val days: Int)
+
+data class GasRow(val tariff: Tariff, val cost: Double, val vsCurrent: Double) {
+    val isCurrent get() = tariff.code == "CURRENT_GAS"
+}
+
+/** Import + export pair with gas: [own] = its own/supplier's gas (current gas for the current
+ *  pair), [cheapest] = cheapest gas anywhere; [total] = net + the cheaper of the two. */
+data class OverallRow(val pair: Pair3, val own: GasRow?, val cheapest: GasRow?, val total: Double)
 
 /** The projected year from the latest analysis run, saved for the Tariffs tab. */
 data class TariffProfile(
@@ -70,6 +84,48 @@ data class PairBreakdown(
 )
 
 object TariffCompare {
+    private val DAYS_IN_MONTH = intArrayOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+    fun gasOffer(supplier: String, name: String, code: String, source: String, kind: String,
+                 rate: Double?, standing: Double?, note: String = ""): Tariff? =
+        if (rate == null || standing == null) null
+        else Tariff(supplier, name, code, source, kind, emptyList(), 0.0, note = note, direction = "GAS",
+            gasRate = rate, gasStanding = standing)
+
+    fun annualGas(daily: Map<String, Double>): GasYear {
+        val byMonth = daily.entries.groupBy({ it.key.substring(5, 7).toInt() - 1 }, { it.value })
+        val monthly = byMonth.mapValues { (m, v) -> v.average() * DAYS_IN_MONTH[m] }
+        val seasonal = monthly.size == 12
+        val days = daily.size
+        val kwh = if (seasonal) monthly.values.sum() else if (days > 0) 365 * daily.values.sum() / days else 0.0
+        return GasYear(kwh, monthly, seasonal, days)
+    }
+
+    fun priceGas(g: Tariff, kwh: Double) = (kwh * (g.gasRate ?: 0.0) + 365 * (g.gasStanding ?: 0.0)) / 100
+
+    fun compareGas(tariffs: List<Tariff>, current: Tariff?, kwh: Double): List<GasRow> {
+        val base = current?.let { priceGas(it, kwh) }
+        return (listOfNotNull(current) + tariffs.filter { it.direction == "GAS" }).map {
+            val c = priceGas(it, kwh)
+            GasRow(it, c, if (base != null) c - base else 0.0)
+        }.sortedBy { it.cost }
+    }
+
+    fun overall(pairs: List<Pair3>, gasRows: List<GasRow>, kwh: Double): List<OverallRow> {
+        val market = gasRows.filterNot { it.isCurrent }
+        val cheapest = market.firstOrNull()
+        val current = gasRows.firstOrNull { it.isCurrent }
+        return pairs.mapNotNull { p ->
+            val own = when {
+                p.imp.isCurrent -> current
+                p.imp.tariff.gas != null -> GasRow(p.imp.tariff.gas, priceGas(p.imp.tariff.gas, kwh), 0.0)
+                else -> market.firstOrNull { it.tariff.supplier == p.imp.tariff.supplier }
+            }
+            val any = if (p.imp.isCurrent) null else cheapest
+            val best = listOfNotNull(own, any).minOfOrNull { it.cost } ?: return@mapNotNull null
+            OverallRow(p, own, any, p.net + best)
+        }.sortedBy { it.total }
+    }
 
     /** "HH:MM-HH:MM" (may wrap midnight) -> half-hour slot indices it covers. */
     fun windowSlots(window: String): Set<Int> {

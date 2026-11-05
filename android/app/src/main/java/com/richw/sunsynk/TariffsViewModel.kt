@@ -5,6 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.richw.sunsynk.analysis.ExportRow
+import com.richw.sunsynk.analysis.GasRow
+import com.richw.sunsynk.analysis.GasYear
+import com.richw.sunsynk.analysis.OverallRow
+import com.richw.sunsynk.api.EonClient
 import com.richw.sunsynk.analysis.HistoryResult
 import com.richw.sunsynk.analysis.TariffHistory
 import com.richw.sunsynk.api.TariffHistorySource
@@ -38,6 +42,9 @@ data class TariffsUiState(
     val historyError: String? = null,
     val historyNote: String? = null,      // days/period/request counts
     val historyAll: Boolean = false,      // all data vs the last 12 full months
+    val gasYear: GasYear? = null,         // from the E.ON gas meter (Data sources)
+    val gasRows: List<GasRow> = emptyList(),
+    val overall: List<OverallRow> = emptyList(),
 )
 
 /**
@@ -159,6 +166,24 @@ class TariffsViewModel(private val context: Context) : ViewModel() {
         val exports = TariffCompare.compareExports(tariffs, p.currentExport, p.export)
         _state.value = _state.value.copy(imports = imports, exports = exports,
             pairs = TariffCompare.bestPairs(imports, exports, 8))
+        // Gas: the E.ON meter's seasonally weighted year, priced at every gas offer and the latest
+        // bill (parsing the readings takes a moment, so off the main thread).
+        val eonDir = File(context.filesDir, "eonData")
+        val offers = tariffs
+        viewModelScope.launch {
+            val (gasYear, gasRows, overall) = withContext(Dispatchers.Default) {
+                val gasDaily = runCatching { EonClient.loadDailyKwh(eonDir, "gas") }.getOrDefault(emptyMap())
+                if (gasDaily.isEmpty()) return@withContext Triple(null, emptyList<GasRow>(), emptyList<OverallRow>())
+                val year = TariffCompare.annualGas(gasDaily)
+                val bill = EonClient.loadCharges(eonDir).filter { it.fuel.equals("Gas", true) && it.rate != null && it.kwh > 0 }
+                    .maxByOrNull { it.start }
+                val current = bill?.let { TariffCompare.gasOffer("Current", "gas billed from ${it.start}", "CURRENT_GAS",
+                    "eonData", "", it.rate, it.standing) }
+                val rows = TariffCompare.compareGas(offers, current, year.kwh)
+                Triple(year, rows, TariffCompare.overall(TariffCompare.bestPairs(imports, exports, Int.MAX_VALUE), rows, year.kwh))
+            }
+            _state.value = _state.value.copy(gasYear = gasYear, gasRows = gasRows, overall = overall)
+        }
     }
 
     class Factory(private val context: Context) : ViewModelProvider.Factory {

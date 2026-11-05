@@ -339,8 +339,9 @@ class EonNextClient:  # pylint: disable=too-many-instance-attributes
             return data
 
     async def _refresh(self):
+        # The refresh token rotates (single use): the new one must be saved or the session dies.
         data = await self._token_request({'grant_type': 'refresh_token', 'client_id': AUTH0_CLIENT_ID,
-                                          'refresh_token': self._tokens['refresh_token']})
+                                          'refresh_token': self._tokens['refresh_token'], 'scope': SCOPE})
         self._tokens.update(data)          # keeps the old refresh token unless a new one is issued
         self._save_tokens()
 
@@ -371,6 +372,8 @@ class EonNextClient:  # pylint: disable=too-many-instance-attributes
                 await self._refresh_or_sign_in()
                 return await self.graphql(query, variables, retry_auth=False)
             raise EonAuthError(errors[0].get('message')) if auth else RuntimeError(errors[0].get('message'))
+        if 'data' not in body:
+            raise RuntimeError(f'E.ON API: unexpected response {str(body)[:200]}')
         return body['data']
 
     async def _refresh_or_sign_in(self):

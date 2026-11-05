@@ -22,6 +22,7 @@ import com.richw.sunsynk.SourceUi
 fun DataSourcesScreen(vm: DataSourcesViewModel, onBack: () -> Unit) {
     val fuse by vm.fuse.collectAsStateWithLifecycle()
     val indra by vm.indra.collectAsStateWithLifecycle()
+    val eon by vm.eon.collectAsStateWithLifecycle()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -40,6 +41,7 @@ fun DataSourcesScreen(vm: DataSourcesViewModel, onBack: () -> Unit) {
         ) {
             FuseCard(vm, fuse)
             IndraCard(vm, indra)
+            EonCard(vm, eon)
         }
     }
 }
@@ -136,6 +138,86 @@ private fun IndraCard(vm: DataSourcesViewModel, ui: SourceUi) {
                     Button(onClick = { vm.indraFinish(link) }, enabled = !ui.busy,
                         modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EonCard(vm: DataSourcesViewModel, ui: SourceUi) {
+    var signInUrl by remember { mutableStateOf<String?>(null) }
+    var pasted by remember { mutableStateOf("") }
+    val clipboard = LocalClipboardManager.current
+    SourceCard(
+        "E.ON Next — import, export and gas meters",
+        "Half-hourly smart-meter readings and your bills. Gas is used in the Tariffs tab's overall " +
+            "comparison; your password is typed into E.ON's own sign-in page and never seen by this app.",
+        ui,
+    ) {
+        if (ui.step == SignInStep.SIGNED_IN) {
+            Button(onClick = vm::eonDownload, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Download meter data and bills")
+            }
+        }
+        val label = if (ui.step == SignInStep.SIGNED_IN) "Sign in again" else "Sign in to E.ON Next"
+        if (ui.step == SignInStep.SIGNED_IN) {
+            TextButton(onClick = { signInUrl = vm.eonSignInUrl() }, enabled = !ui.busy) { Text(label) }
+        } else {
+            Button(onClick = { signInUrl = vm.eonSignInUrl() }, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+                Text(label)
+            }
+        }
+        if (signInUrl != null && ui.step != SignInStep.SIGNED_IN) {
+            Text("If the sign-in page closed without signing you in (e.g. the E.ON app opened instead), " +
+                "copy the callback URL and paste it here.", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(pasted, { pasted = it }, label = { Text("Callback URL") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { pasted = clipboard.getText()?.text ?: pasted }) { Text("Paste") } })
+            Button(onClick = { vm.eonFinish(pasted) }, enabled = !ui.busy && pasted.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()) { Text("Finish sign-in") }
+        }
+    }
+    signInUrl?.let { url ->
+        EonSignInDialog(url,
+            onCallback = { cb -> vm.eonFinish(cb); signInUrl = null },
+            onDismiss = { signInUrl = null })
+    }
+}
+
+/** E.ON's Auth0 sign-in page in a WebView. Auth0 finishes by redirecting to the E.ON Next app's
+ *  scheme; we catch that navigation and hand the URL (with the code) back instead. */
+@android.annotation.SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun EonSignInDialog(url: String, onCallback: (String) -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize()) {
+            Column {
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("E.ON Next sign-in", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                }
+                androidx.compose.ui.viewinterop.AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        android.webkit.WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webViewClient = object : android.webkit.WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: android.webkit.WebView,
+                                                                      request: android.webkit.WebResourceRequest): Boolean {
+                                    val target = request.url.toString()
+                                    if (target.startsWith(com.richw.sunsynk.api.EonClient.REDIRECT_SCHEME + "://")) {
+                                        onCallback(target)
+                                        return true
+                                    }
+                                    return false
+                                }
+                            }
+                            loadUrl(url)
+                        }
+                    },
+                )
             }
         }
     }
