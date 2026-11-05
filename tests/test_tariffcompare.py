@@ -1,6 +1,6 @@
 """tariff_sources.py parsers/helpers and tariffcompare.py pricing (no network)."""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -12,7 +12,7 @@ from analysis.tariff_sources import (
     DEFAULTS)
 from analysis.tariffcompare import (
     _runs, annual_profile, best_pairs, compare, compare_exports, current_tariff, describe_rates,
-    load_tariff_settings, pair_breakdown, price_tariff)
+    load_tariff_settings, pair_breakdown, price_export, price_tariff)
 from tests.test_calculations import _FakeMonth, _boost_day_data
 
 
@@ -194,17 +194,17 @@ def test_price_tariff_as_now_and_ev_retimed():
     house, ev = [0.0] * 48, [0.0] * 48
     house[20] = 1000.0                       # 10:00, peak everywhere
     ev[0], ev[30] = 2000.0, 100.0            # 00:00 (current off-peak) and a 15:00 top-up
-    current_off = window_slots('00:00-06:00')
     go = _go_like(9.0, 30.0, '00:30-05:30')
-    p = price_tariff(go, house, ev, current_off)
+    p = price_tariff(go, house, ev)
     assert p['as_now'] == pytest.approx((1000 * 30 + 2000 * 30 + 100 * 30) / 100 + 365 * 0.5)
-    assert p['retimed'] == pytest.approx((1000 * 30 + 2000 * 9 + 100 * 30) / 100 + 365 * 0.5)
+    # all EV charging (the daytime top-up too) goes to the overnight rate
+    assert p['retimed'] == pytest.approx((1000 * 30 + 2100 * 9) / 100 + 365 * 0.5)
     assert p['cheap_kwh'] == 0.0             # nothing imported 00:30-05:30 as things are
     smart = _go_like(7.0, 35.0, '23:30-05:30', smart=True, ev_rate=7.0)
-    p = price_tariff(smart, house, ev, current_off)
+    p = price_tariff(smart, house, ev)
     assert p['retimed'] == pytest.approx((1000 * 35 + 2100 * 7) / 100 + 365 * 0.5)
     flat = {**go, 'slot_rates': [25.0] * 48}
-    p = price_tariff(flat, house, ev, current_off)
+    p = price_tariff(flat, house, ev)
     assert p['as_now'] == p['retimed'] and p['cheap_kwh'] == 0.0
 
 
@@ -294,7 +294,7 @@ def test_best_pairs_respect_required_supplier():
 def test_price_tariff_breakdown_adds_up():
     house, ev = [10.0] * 48, [0.0] * 48
     ev[2] = 50.0
-    p = price_tariff(_go_like(7.0, 30.0, '00:00-05:00'), house, ev, window_slots('00:00-06:00'))
+    p = price_tariff(_go_like(7.0, 30.0, '00:00-05:00'), house, ev)
     assert p['retimed'] == pytest.approx(p['house_cost'] + p['ev_retimed'] + p['standing_year'])
     assert p['ev_p_per_kwh'] == pytest.approx(7.0)
 
@@ -313,13 +313,78 @@ def test_pair_breakdown_adds_up():
     house, ev, export = [10.0] * 48, [0.0] * 48, [0.0] * 48
     ev[2], export[24] = 50.0, 100.0
     imp_t = _go_like(7.0, 30.0, '00:00-05:00')
-    imp = {**imp_t, **price_tariff(imp_t, house, ev, window_slots('00:00-06:00'))}
+    imp = {**imp_t, **price_tariff(imp_t, house, ev)}
     exp = {'income': 13.0}
     b = pair_breakdown(imp, exp, house, ev, export)
     assert (b['house_off_kwh'], b['house_peak_kwh']) == (100.0, 380.0)
     assert (b['house_off_rate'], b['house_peak_rate']) == (pytest.approx(7.0), pytest.approx(30.0))
     assert b['house_off'] + b['house_peak'] + b['ev'] + b['standing'] == pytest.approx(b['import_total'])
     assert b['export_rate'] == pytest.approx(13.0) and b['net'] == pytest.approx(imp['retimed'] - 13.0)
+
+
+def test_dynamic_tariffs_priced_month_by_month():
+    """A tariff with month_slot_rates is priced per calendar month against an average such
+    month's kWh; EV at that month's cheapest rate; export likewise; the yearly figures are
+    ignored."""
+    month_house = [[0.0] * 48 for _ in range(12)]
+    month_ev = [[0.0] * 48 for _ in range(12)]
+    month_export = [[0.0] * 48 for _ in range(12)]
+    month_house[0][36], month_house[6][36] = 100.0, 50.0      # 18:00 in Jan and Jul
+    month_ev[0][2], month_ev[6][30] = 200.0, 100.0           # Jul EV charged at 15:00
+    month_export[6][24] = 300.0
+    ms = [[20.0] * 48 for _ in range(12)]
+    ms[0][36], ms[6][36], ms[0][4], ms[6][6] = 40.0, 30.0, 10.0, 5.0
+    house = [sum(m[k] for m in month_house) for k in range(48)]
+    ev = [sum(m[k] for m in month_ev) for k in range(48)]
+    agile = {**_go_like(99.0, 99.0, '00:00-01:00', standing=0.0), 'month_slot_rates': ms}
+    p = price_tariff(agile, house, ev, month_house, month_ev)
+    assert p['house_cost'] == pytest.approx((100 * 40 + 50 * 30) / 100)
+    assert p['ev_now'] == pytest.approx((200 * 20 + 100 * 20) / 100)
+    assert p['ev_retimed'] == pytest.approx((200 * 10 + 100 * 5) / 100)
+    assert price_tariff(agile, house, ev)['house_cost'] == pytest.approx(150 * 99 / 100)   # no month data
+    out = {'slot_rates': [99.0] * 48, 'month_slot_rates': [[r / 2 for r in m] for m in ms]}
+    assert price_export(out, [0.0] * 48, month_export) == pytest.approx(300 * 10 / 100)
+    imp = {**agile, **p}
+    b = pair_breakdown(imp, {'income': 0.0}, house, ev, [0.0] * 48, month_house, month_ev)
+    assert b['house_peak_kwh'] + b['house_off_kwh'] == pytest.approx(150.0)
+    assert b['house_off'] + b['house_peak'] == pytest.approx(p['house_cost'])
+
+
+def test_month_slot_averages_and_seasonal_yearly():
+    from analysis.tariff_sources import complete_months_before, month_slot_averages, slot_instants
+    months = complete_months_before(date(2026, 11, 5))
+    assert (months[0], months[-1]) == (date(2025, 11, 1), date(2026, 10, 1))
+    rows = []
+    for m in months:              # each half-hour of a month priced at month number + slot/100
+        d = m
+        while d.month == m.month:
+            for k, t in enumerate(slot_instants(d)):
+                rows.append({'valid_from': t.isoformat(), 'valid_to': (t + timedelta(minutes=30)).isoformat(),
+                             'value_inc_vat': m.month + k / 100})
+            d += timedelta(days=1)
+    ms = month_slot_averages(rows, months)
+    assert ms[0][0] == pytest.approx(1.0) and ms[6][47] == pytest.approx(7.47)   # Jan 00:00, Jul 23:30 (BST)
+    assert month_slot_averages(rows[:100], months) is None
+
+
+def test_slot_projection_month_slots_and_monthly_ev():
+    sp = SlotProjection('2026-05-01')
+    ev_before, ev_after = [0.0] * 48, [0.0] * 48
+    ev_before[2], ev_after[2] = 1000.0, 3000.0
+    for d in range(1, 31):        # every month, 2025 before the basis and 2026 after it for May-Aug
+        for m in range(1, 13):
+            sp.add_day(f'2025-{m:02d}-{d:02d}', [h + 500.0 for h in ev_before], ev_before, [100.0] * 48)
+        for m in range(5, 9):
+            sp.add_day(f'2026-{m:02d}-{d:02d}', [h + 500.0 for h in ev_after], ev_after, [100.0] * 48)
+    monthly = sp.monthly_ev(1200.0)
+    assert sum(monthly.values()) == pytest.approx(1200.0)
+    # Jan (before only, 1 kWh/day) x the shared months' after/all ratio (3 / 2) vs Jun's 3 kWh/day after
+    assert monthly[0] / 31 * 2 == pytest.approx(monthly[5] / 30)
+    house = sp.month_slot_house()
+    assert sum(map(sum, house)) == pytest.approx(sum(sp.annual_house()))
+    assert sum(map(sum, sp.month_slot_export())) == pytest.approx(sum(sp.annual_export()))
+    month_ev = sp.month_slot_ev(1200.0)
+    assert sum(map(sum, month_ev)) == pytest.approx(1200.0) and month_ev[3][2] == pytest.approx(monthly[3])
 
 
 # ---------------------------------------------------------------- gas

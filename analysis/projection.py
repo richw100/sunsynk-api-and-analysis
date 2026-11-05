@@ -141,11 +141,19 @@ class SlotProjection:
         self._days = [0] * 12
         self._ev_all = [0.0] * 48
         self._ev_after = [0.0] * 48
+        self._ev_month_all = [0.0] * 12      # EV import kWh per calendar month, every day
+        self._ev_month_after = [0.0] * 12    # ... and only days since ev_basis_from
+        self._after_days = [0] * 12
 
     def add_day(self, date_str: str, total_wh: list, ev_wh: list, export_wh: list | None = None):
         m = int(date_str[5:7]) - 1
         self._days[m] += 1
         after = bool(self.ev_basis_from) and date_str >= self.ev_basis_from
+        ev_kwh = sum(ev_wh) / 1000
+        self._ev_month_all[m] += ev_kwh
+        if after:
+            self._ev_month_after[m] += ev_kwh
+            self._after_days[m] += 1
         for k in range(48):
             self._house[m][k] += (total_wh[k] - ev_wh[k]) / 1000
             self._ev_all[k] += ev_wh[k] / 1000
@@ -189,3 +197,39 @@ class SlotProjection:
         src = self._ev_after if sum(self._ev_after) > 0 else self._ev_all
         total = sum(src)
         return [v / total if total else 0.0 for v in src]
+
+    def monthly_ev(self, ev_year: float) -> dict:
+        """{month index: EV kWh} summing to ``ev_year``: months seen since ev_basis_from at
+        their measured daily rate, earlier-only months scaled by the after/before ratio over
+        the months seen in both (as rebased_annual_ev), x month length."""
+        shared = [m for m in range(12) if self._after_days[m] and self._days[m] > self._after_days[m]]
+        def all_per_day(m):
+            return self._ev_month_all[m] / self._days[m]
+        def after_per_day(m):
+            return self._ev_month_after[m] / self._after_days[m]
+        before = sum(all_per_day(m) for m in shared)
+        ratio = sum(after_per_day(m) for m in shared) / before if shared and before > 0 else 1.0
+        raw = {m: (after_per_day(m) if self._after_days[m]
+                   else all_per_day(m) * (ratio if self.ev_basis_from else 1.0)) * DAYS_IN_MONTH[m]
+               for m in range(12) if self._days[m]}
+        total = sum(raw.values())
+        return {m: v * ev_year / total for m, v in raw.items()} if total > 0 else raw
+
+    def _month_slots(self, series: list) -> list:
+        return [[series[m][k] / self._days[m] * DAYS_IN_MONTH[m] if self._days[m] else 0.0
+                 for k in range(48)] for m in range(12)]
+
+    def month_slot_house(self) -> list:
+        """House import kWh per calendar month x half-hour for an average such month (12 x 48;
+        once ``seasonal`` the months sum to annual_house())."""
+        return self._month_slots(self._house)
+
+    def month_slot_export(self) -> list:
+        """Export kWh per calendar month x half-hour (12 x 48)."""
+        return self._month_slots(self._export)
+
+    def month_slot_ev(self, ev_year: float) -> list:
+        """EV kWh per calendar month x half-hour: monthly_ev() spread over ev_shape()."""
+        monthly = self.monthly_ev(ev_year)
+        shape = self.ev_shape()
+        return [[monthly.get(m, 0.0) * f for f in shape] for m in range(12)]

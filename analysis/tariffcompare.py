@@ -9,10 +9,14 @@ time-of-use windows, plus the current tariff (newest period of the energyPrices 
 
 Import - each tariff's cost split into house energy, EV energy and a year of standing charge:
   EV as now      - every half-hour at the tariff's rate, with today's charging times
-  EV re-timed    - EV energy now charged in the current off-peak window moves to the tariff's
-                   cheapest rate (you'd re-schedule the charger); on smart-charging tariffs
-                   (Intelligent Octopus Go, OVO Charge Anytime) all EV import gets the EV rate
+  EV re-timed    - ALL EV charging at the tariff's overnight (cheapest) rate, as a scheduled
+                   charger would; on smart-charging tariffs (Intelligent Octopus Go, OVO
+                   Charge Anytime) at the EV rate if lower
   Total = house + the cheaper EV figure + standing charge.
+Dynamic tariffs (Agile import, Agile Outgoing) are priced month by month at the average price
+  per calendar month x half-hour over the last 12 complete months (tariff_sources.seasonal),
+  against an average such month of house/EV/export (once a full year of data exists), rather
+  than the last rateDays, which can be far from a typical year.
 Gas - a seasonally weighted year of gas (each calendar month's average day from the E.ON
   Next half-hourly meter cache, eondata.py, x the month's length) priced at every gas offer
   (unit rate x kWh + a year of standing charge): Kraken products with a gas tariff, energyplus
@@ -28,7 +32,8 @@ Export - the projected year of export per half-hour (SlotProjection, seasonal) p
 Usage: python analysis/tariffcompare.py [key:value ...]
   Same keys as collectdata.py, plus:
   region:X          DNO region letter A-P (default: tariffCompare.region in config.local.json)
-  rateDays:N        days of unit-rate history averaged per half-hour (default 14)
+  rateDays:N        days of unit-rate history averaged per half-hour (default 14;
+                    dynamic tariffs use the last 12 complete months)
   tariffDataDir:DIR cache for fetched tariff data (default tariffData)
   top:N             only print the N cheapest tariffs (default: all)
 """
@@ -52,7 +57,7 @@ from analysis.pricedata import PriceData
 from analysis.projection import SlotProjection, latest_rates
 from analysis import tariff_sources
 from analysis.eon_client import load_daily_kwh, load_tariffs
-from analysis.tariff_sources import DEFAULTS as TARIFF_DEFAULTS, tou_slot_rates, window_slots
+from analysis.tariff_sources import DEFAULTS as TARIFF_DEFAULTS, tou_slot_rates
 
 LOCAL_CONFIG = 'config.local.json'
 
@@ -114,21 +119,33 @@ def annual_profile(slots: SlotProjection, annual_import_kwh: float) -> tuple:
     return house, [ev_year * f for f in slots.ev_shape()]
 
 
-def price_tariff(tariff: dict, house: list, ev: list, current_off_slots: set) -> dict:
-    """Annual £ for one import tariff, split into house energy, EV energy (as now and
-    re-timed, see module doc) and standing charge."""
+def _segments(tariff: dict, house: list, ev: list, month_house, month_ev) -> list:
+    """(house, ev, rates) to price: one per calendar month for a tariff with seasonal
+    ``month_slot_rates`` (when the month x half-hour kWh are known), else the whole year."""
+    ms = tariff.get('month_slot_rates')
+    if ms and len(ms) == 12 and month_house and month_ev:
+        return [(month_house[m], month_ev[m], ms[m]) for m in range(12)]
+    return [(house, ev, tariff['slot_rates'])]
+
+
+def price_tariff(tariff: dict, house: list, ev: list, month_house: list | None = None,  # pylint: disable=too-many-locals
+                 month_ev: list | None = None) -> dict:
+    """Annual £ for one import tariff, split into house energy, EV energy (as now, and
+    "re-timed": ALL EV charging at the tariff's overnight = cheapest rate, or its smart-EV
+    rate) and standing charge. Seasonal tariffs are priced month by month."""
+    standing = 365 * tariff['standing'] / 100
+    house_cost = ev_now = ev_best = 0.0
+    for h, e, rates in _segments(tariff, house, ev, month_house, month_ev):
+        cheapest = min(rates)
+        house_cost += sum(x * r for x, r in zip(h, rates)) / 100
+        ev_now += sum(x * r for x, r in zip(e, rates)) / 100
+        ev_rate = cheapest
+        if tariff.get('smart_ev') and tariff.get('ev_rate') is not None:
+            ev_rate = min(tariff['ev_rate'], cheapest)
+        ev_best += sum(e) * ev_rate / 100
+    ev_retimed = min(ev_now, ev_best)
     rates = tariff['slot_rates']
     cheapest = min(rates)
-    standing = 365 * tariff['standing'] / 100
-    house_cost = sum(h * r for h, r in zip(house, rates)) / 100
-    ev_now = sum(e * r for e, r in zip(ev, rates)) / 100
-    if tariff.get('smart_ev'):
-        ev_rate = tariff['ev_rate'] if tariff.get('ev_rate') is not None else cheapest
-        ev_retimed = sum(ev) * min(ev_rate, cheapest) / 100
-    else:
-        ev_retimed = sum(e * (cheapest if k in current_off_slots else rates[k])
-                         for k, e in enumerate(ev)) / 100
-    ev_retimed = min(ev_now, ev_retimed)
     cheap_slots = [k for k in range(48) if rates[k] <= cheapest + 0.005]
     ev_kwh = sum(ev)
     return {
@@ -144,8 +161,12 @@ def price_tariff(tariff: dict, house: list, ev: list, current_off_slots: set) ->
     }
 
 
-def price_export(tariff: dict, export: list) -> float:
-    """Annual £ earned exporting ``export`` kWh per half-hour at the tariff's rates."""
+def price_export(tariff: dict, export: list, month_export: list | None = None) -> float:
+    """Annual £ earned exporting ``export`` kWh per half-hour at the tariff's rates (month by
+    month at its seasonal rates when it has them and ``month_export`` is given)."""
+    ms = tariff.get('month_slot_rates')
+    if ms and len(ms) == 12 and month_export:
+        return sum(x * r for m in range(12) for x, r in zip(month_export[m], ms[m])) / 100
     return sum(x * r for x, r in zip(export, tariff['slot_rates'])) / 100
 
 
@@ -184,13 +205,13 @@ def _slot_time(k: int) -> str:
     return f'{k // 2:02d}:{30 * (k % 2):02d}'
 
 
-def compare(tariffs: list, current: dict, house: list, ev: list) -> list:
+def compare(tariffs: list, current: dict, house: list, ev: list,  # pylint: disable=too-many-arguments,too-many-positional-arguments
+            month_house: list | None = None, month_ev: list | None = None) -> list:
     """Priced import rows, cheapest total first; each row is the tariff plus its prices."""
-    off_slots = window_slots(current['window'])
-    base = price_tariff(current, house, ev, off_slots)
+    base = price_tariff(current, house, ev, month_house, month_ev)
     rows = []
     for t in [current] + [t for t in tariffs if t.get('direction', 'IMPORT') == 'IMPORT']:
-        p = price_tariff(t, house, ev, off_slots)
+        p = price_tariff(t, house, ev, month_house, month_ev)
         kind, text = describe_rates(t['slot_rates'])
         rows.append({**t, **p, 'rate_type': kind, 'rates_text': text,
                      'vs_current': p['retimed'] - base['retimed']})
@@ -198,12 +219,12 @@ def compare(tariffs: list, current: dict, house: list, ev: list) -> list:
     return rows
 
 
-def compare_exports(tariffs: list, current: dict, export: list) -> list:
+def compare_exports(tariffs: list, current: dict, export: list, month_export: list | None = None) -> list:
     """Priced export rows, highest income first."""
-    base = price_export(current, export)
+    base = price_export(current, export, month_export)
     rows = []
     for t in [current] + [t for t in tariffs if t.get('direction') == 'EXPORT']:
-        income = price_export(t, export)
+        income = price_export(t, export, month_export)
         kind, text = describe_rates(t['slot_rates'], best_high=True)
         rows.append({**t, 'income': income, 'rate_type': kind, 'rates_text': text,
                      'vs_current': income - base})
@@ -368,8 +389,8 @@ def print_import_table(rows: list, house: list, ev: list, derived: dict, note: s
     print(f'IMPORT TARIFFS  ({note})')
     print(f"  Projected import: {total:.0f}kWh/year = house {sum(house):.0f}kWh + EV {sum(ev):.0f}kWh"
           f"  (PROJECTED YEARLY IMPORT: {derived['annual_import_peak_kwh'] + derived['annual_import_off_peak_kwh']:.0f}kWh)")
-    print('  House/EV £ = energy only; EV now = today\'s charging times, EV re-timed = overnight')
-    print('  charging moved to the tariff\'s cheapest rate (smart EV tariffs: all EV at their EV rate).')
+    print('  House/EV £ = energy only; EV now = today\'s charging times, EV re-timed = all EV')
+    print('  charging at the tariff\'s overnight (cheapest) rate (smart EV tariffs: their EV rate if lower).')
     print('  Total = house + EV re-timed + standing charge.')
     print('')
     head = (f"  {'#':>3} {'Supplier':<16} {'Tariff':<34} {'Type':<10} {'Unit rates p/kWh':<30}"
@@ -392,8 +413,8 @@ def print_import_table(rows: list, house: list, ev: list, derived: dict, note: s
         if flags:
             print(f"  {'':>3} {'':<16}   ({'; '.join(flags)})")
     print('')
-    print('  Dynamic tariffs (Agile, FreePhase Dynamic) use the average price of each half-hour over')
-    print('  the recent rateDays only - a guide, not a forecast. Eligibility (smart meter, compatible')
+    print('  Dynamic tariffs (Agile) are priced month by month at each half-hour\'s average over the')
+    print('  last 12 complete months - a guide, not a forecast. Eligibility (smart meter, compatible')
     print('  charger/car, existing-customer deals) and exit fees are not checked.')
 
 
@@ -436,7 +457,7 @@ def print_export(rows: list, slots: SlotProjection, export: list, top: int = 0, 
             print(f"  {'':>3} {'':<16}   ({_short(r['note'], 100)})")
     print('')
     print('  "Needs import from" is assumed from the product (exportRequires) - check before switching.')
-    print('  Agile Outgoing uses recent half-hour prices, which run well below summer, when most export happens.')
+    print('  Agile Outgoing is priced month by month at the last 12 complete months\' half-hour averages.')
 
 
 def print_pairs(pairs: list):
@@ -461,19 +482,22 @@ def print_pairs(pairs: list):
     print('  (and flat-import-only ones, e.g. E.ON Export Exclusive, not with time-of-use tariffs).')
 
 
-def pair_breakdown(imp: dict, exp: dict, house: list, ev: list, export: list) -> dict:
+def pair_breakdown(imp: dict, exp: dict, house: list, ev: list, export: list,  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+                   month_house: list | None = None, month_ev: list | None = None) -> dict:
     """kWh and £ of one import + export pair: house split into the import tariff's cheapest-rate
-    half-hours ("off-peak") and the rest ("peak"), EV (re-timed, as priced), standing charge,
-    export, and the net total."""
-    rates = imp['slot_rates']
-    cheapest = min(rates)
-    tou = len({round(r, 2) for r in rates}) > 1
-    off = [k for k in range(48) if tou and rates[k] <= cheapest + 0.005]
-    peak = [k for k in range(48) if k not in off]
-    house_off_kwh = sum(house[k] for k in off)
-    house_peak_kwh = sum(house[k] for k in peak)
-    house_off = sum(house[k] * rates[k] for k in off) / 100
-    house_peak = sum(house[k] * rates[k] for k in peak) / 100
+    half-hours ("off-peak", per month for seasonal tariffs) and the rest ("peak"), EV (all at the
+    overnight rate, as priced), standing charge, export, and the net total."""
+    house_off_kwh = house_peak_kwh = house_off = house_peak = 0.0
+    for h, _, rates in _segments(imp, house, ev, month_house, month_ev):
+        cheapest = min(rates)
+        tou = len({round(r, 2) for r in rates}) > 1
+        for k in range(48):
+            if tou and rates[k] <= cheapest + 0.005:
+                house_off_kwh += h[k]
+                house_off += h[k] * rates[k] / 100
+            else:
+                house_peak_kwh += h[k]
+                house_peak += h[k] * rates[k] / 100
     ev_kwh, export_kwh = sum(ev), sum(export)
     return {
         'house_peak_kwh': house_peak_kwh, 'house_peak': house_peak,
@@ -488,7 +512,8 @@ def pair_breakdown(imp: dict, exp: dict, house: list, ev: list, export: list) ->
     }
 
 
-def print_pair_details(pairs: list, house: list, ev: list, export: list, n: int = 6):
+def print_pair_details(pairs: list, house: list, ev: list, export: list, n: int = 6,  # pylint: disable=too-many-arguments,too-many-positional-arguments
+                       month_house: list | None = None, month_ev: list | None = None):
     """PAIR DETAIL: rates and the house peak/off-peak, EV, standing and export split for the
     leading ``n`` pairs (plus the current pair)."""
     shown = pairs[:n] + [p for p in pairs[n:] if p[0]['code'] == 'CURRENT']
@@ -496,7 +521,7 @@ def print_pair_details(pairs: list, house: list, ev: list, export: list, n: int 
     print('PAIR DETAIL  (£/year; "off-peak" = the import tariff\'s cheapest-rate half-hours;'
           ' p = average p/kWh paid)')
     for imp, exp, _ in shown:
-        b = pair_breakdown(imp, exp, house, ev, export)
+        b = pair_breakdown(imp, exp, house, ev, export, month_house, month_ev)
         print(f"  {imp['supplier']} {imp['name']}  +  {exp['supplier']} {exp['name']}"
               + ('   <== current' if imp['code'] == 'CURRENT' else ''))
         print(f"    Rates:    import {imp['rates_text']} p/kWh, standing {imp['standing']:.2f}p/day;"
@@ -570,13 +595,18 @@ async def main():  # pylint: disable=too-many-locals
     house, ev = annual_profile(
         slots, derived['annual_import_peak_kwh'] + derived['annual_import_off_peak_kwh'])
     export = slots.annual_export()
-    rows = compare(tariffs, current_tariff(energy_prices_data), house, ev)
-    export_rows = compare_exports(tariffs, current_export(energy_prices_data), export)
+    # Seasonal (Agile) tariffs are priced month by month against an average such month.
+    month_house = month_ev = month_export = None
+    if slots.seasonal:
+        month_house, month_export = slots.month_slot_house(), slots.month_slot_export()
+        month_ev = slots.month_slot_ev(sum(ev))
+    rows = compare(tariffs, current_tariff(energy_prices_data), house, ev, month_house, month_ev)
+    export_rows = compare_exports(tariffs, current_export(energy_prices_data), export, month_export)
     print_import_table(rows, house, ev, derived, prices.projection_note(), cfg['top'])
     print_export(export_rows, slots, export, cfg['top'], prices.projection.annual_kwh('export'))
     pairs = best_pairs(rows, export_rows)
     print_pairs(pairs)
-    print_pair_details(pairs, house, ev, export)
+    print_pair_details(pairs, house, ev, export, month_house=month_house, month_ev=month_ev)
 
     gas_rows = []
     gas_daily = load_daily_kwh(cfg.get('eonDataDir', 'eonData'), 'gas')

@@ -25,6 +25,7 @@ Every response is cached under ``{dataDir}/{YYYY-MM-DD}/`` so re-runs on the sam
 make no network calls.
 """
 import asyncio
+import bisect
 import html
 import json
 import os
@@ -190,6 +191,44 @@ def _parse_utc(text: str) -> datetime:
     return datetime.fromisoformat(text.replace('Z', '+00:00')).astimezone(timezone.utc)
 
 
+class Timeline:
+    """Kraken rate periods (UTC valid_from/valid_to, None = open-ended) for lookup by instant.
+    Non-Direct-Debit rows are dropped; where periods overlap the latest-starting one wins."""
+
+    def __init__(self, rows: list):
+        far_past = datetime.min.replace(tzinfo=timezone.utc)
+        far_future = datetime.max.replace(tzinfo=timezone.utc)
+        periods = []
+        for r in rows:
+            if r.get('payment_method') not in (None, 'DIRECT_DEBIT'):
+                continue
+            start = _parse_utc(r['valid_from']) if r.get('valid_from') else far_past
+            stop = _parse_utc(r['valid_to']) if r.get('valid_to') else far_future
+            periods.append((start, stop, float(r['value_inc_vat'])))
+        periods.sort(key=lambda p: p[0])
+        self._starts = [p[0] for p in periods]
+        self._periods = periods
+
+    def __len__(self):
+        return len(self._periods)
+
+    def at(self, instant: datetime):
+        """The rate in force at `instant` (UTC), or None."""
+        i = bisect.bisect_right(self._starts, instant) - 1
+        while i >= 0:
+            start, stop, value = self._periods[i]
+            if start <= instant < stop:
+                return value
+            i -= 1
+        return None
+
+
+def slot_instants(day: date) -> list:
+    """UTC start instant of each local (Europe/London) half-hour slot of `day`."""
+    return [datetime(day.year, day.month, day.day, k // 2, 30 * (k % 2), tzinfo=LOCAL_TZ)
+            .astimezone(timezone.utc) for k in range(48)]
+
+
 def region_names(region: str) -> list:
     return [n.lower() for n in REGION_NAMES.get(region.upper().lstrip('_'), [])]
 
@@ -309,7 +348,9 @@ async def _kraken_product(fetcher: Fetcher, host: str, product: dict, region: st
         slots = await _kraken_unit_rate_slots(fetcher, single, product, cfg, today)
         if slots is None:
             return None
-        return {**result, 'slot_rates': slots, 'standing': float(single['standing_charge_inc_vat'])}
+        rates_url = next((l['href'] for l in single.get('links', []) if l['rel'] == 'standard_unit_rates'), None)
+        return {**result, 'slot_rates': slots, 'standing': float(single['standing_charge_inc_vat']),
+                'rates_url': rates_url}
 
     # Four-rate EV tariffs (Intelligent Octopus Go): day/night rates without times (the
     # window is only in the description) plus a rate for smart-charged EV energy.
@@ -400,6 +441,77 @@ async def _kraken_unit_rate_slots(fetcher: Fetcher, tariff: dict, product: dict,
         return [float(flat)] * 48 if flat is not None else None
     fill = float(flat) if flat is not None else max(known)
     return [fill if s is None else s for s in slots]
+
+
+def is_dynamic(rates: list) -> bool:
+    """More than four distinct rates a day: a half-hourly priced tariff such as Agile."""
+    return len({round(r, 2) for r in rates}) > 4
+
+
+def complete_months_before(today: date) -> list:
+    """First day of each of the 12 complete calendar months before ``today``, oldest first."""
+    m = date(today.year, today.month, 1)
+    out = []
+    for _ in range(12):
+        m = date(m.year - (m.month == 1), (m.month - 2) % 12 + 1, 1)
+        out.insert(0, m)
+    return out
+
+
+def _month_after(m: date) -> date:
+    return date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+
+
+def month_slot_averages(rows: list, months: list):
+    """Average p/kWh per calendar month (index 0 = January) x local half-hour over ``months``
+    (first days, one of each calendar month), from a Kraken unit-rate timeline; a half-hour
+    with no prices gets that month's mean. None if any month has no prices at all."""
+    timeline = Timeline(rows)
+    sums = [[0.0] * 48 for _ in range(12)]
+    counts = [[0] * 48 for _ in range(12)]
+    for m in months:
+        d = m
+        while d < _month_after(m):
+            for k, t in enumerate(slot_instants(d)):
+                v = timeline.at(t)
+                if v is not None:
+                    sums[m.month - 1][k] += v
+                    counts[m.month - 1][k] += 1
+            d += timedelta(days=1)
+    if any(sum(counts[i]) == 0 for i in range(12)):
+        return None
+    out = []
+    for i in range(12):
+        known = [sums[i][k] / counts[i][k] for k in range(48) if counts[i][k]]
+        fill = sum(known) / len(known)
+        out.append([sums[i][k] / counts[i][k] if counts[i][k] else fill for k in range(48)])
+    return out
+
+
+async def seasonal(hist: Fetcher, tariff: dict, today: date) -> dict:
+    """A dynamic tariff priced from the last 12 complete months instead of the last
+    ``rateDays`` (which can be far from a typical year, e.g. 15-21p Agile Outgoing in autumn vs
+    ~11p over a year): ``month_slot_rates`` = 12 x 48 average p/kWh, and ``slot_rates`` their
+    length-weighted yearly average. Completed months go through ``hist``, the permanent
+    history cache shared with tariffhistory.py (same request parameters)."""
+    months = complete_months_before(today)
+    rows = []
+    for i, m in enumerate(months):
+        frm = m - timedelta(days=1) if i == 0 else m       # local midnight in BST is 23:00 UTC
+        url, params = tariff['rates_url'], {'page_size': 1500, 'period_from': f'{frm}T00:00:00Z',
+                                            'period_to': f'{_month_after(m)}T00:00:00Z'}
+        while url:
+            page = await hist.get_json(url, params)
+            rows += page.get('results', [])
+            url, params = page.get('next'), None
+    ms = month_slot_averages(rows, months)
+    if ms is None:
+        return tariff
+    days = [(_month_after(m) - m).days for m in months]
+    yearly = [sum(ms[m.month - 1][k] * n for m, n in zip(months, days)) / sum(days) for k in range(48)]
+    note = '; '.join(x for x in (tariff.get('note'), "priced month by month at the last 12 months' "
+                                 'half-hourly prices') if x)
+    return {**tariff, 'month_slot_rates': ms, 'slot_rates': yearly, 'note': note}
 
 
 # ---------------------------------------------------------------- energyplus.co.uk
@@ -693,7 +805,14 @@ async def fetch_all(cfg: dict, today: date | None = None) -> tuple:
                                     'note': f'EV smart-charged at {rate}p (compatible car/charger needed)'})
             except (SourceError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                 print(f'  [source failed] OVO Charge Anytime: {e}')
+        hist = Fetcher(session, os.path.join(cfg['dataDir'], 'history'))
+        for i, t in enumerate(tariffs):
+            if t.get('rates_url') and t.get('direction') != 'GAS' and is_dynamic(t['slot_rates']):
+                try:
+                    tariffs[i] = await seasonal(hist, t, today)
+                except (SourceError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    print(f"  [seasonal failed] {t['code']}: {e}")
     tariffs += [manual_tariff(e) for e in cfg.get('manualTariffs') or []]
     tariffs += [manual_tariff(e, 'EXPORT') for e in cfg.get('manualExportTariffs') or []]
     tariffs += [manual_gas_tariff(e) for e in cfg.get('manualGasTariffs') or []]
-    return link_gas(tariffs), {'calls': fetcher.calls, 'hits': fetcher.hits}
+    return link_gas(tariffs), {'calls': fetcher.calls + hist.calls, 'hits': fetcher.hits + hist.hits}

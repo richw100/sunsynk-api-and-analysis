@@ -27,7 +27,6 @@ Usage: python analysis/tariffhistory.py [key:value ...]
   chargerKw:N       EV charger power for re-timing (default 7.4)
 """
 import asyncio
-import bisect
 import csv
 import os
 import re
@@ -46,7 +45,7 @@ from analysis.collectdata import (_load_settings, _make_battery, _iter_energy_da
 from analysis.energy_client import SunsynkEnergyClient
 from analysis.energyprices import EnergyPrices
 from analysis.pricedata import PriceData
-from analysis.tariff_sources import (Fetcher, KRAKEN_HOSTS, LOCAL_TZ, REGION_NAMES, _parse_utc,
+from analysis.tariff_sources import (Fetcher, KRAKEN_HOSTS, REGION_NAMES, Timeline, slot_instants,
                                      tou_slot_rates, window_slots)
 from analysis.tariffcompare import load_tariff_settings
 
@@ -69,44 +68,6 @@ DEFAULT_CHARGER_KW = 7.4
 
 
 # ---------------------------------------------------------------- rate timelines
-
-class Timeline:
-    """Kraken rate periods (UTC valid_from/valid_to, None = open-ended) for lookup by instant.
-    Non-Direct-Debit rows are dropped; where periods overlap the latest-starting one wins."""
-
-    def __init__(self, rows: list):
-        far_past = datetime.min.replace(tzinfo=timezone.utc)
-        far_future = datetime.max.replace(tzinfo=timezone.utc)
-        periods = []
-        for r in rows:
-            if r.get('payment_method') not in (None, 'DIRECT_DEBIT'):
-                continue
-            start = _parse_utc(r['valid_from']) if r.get('valid_from') else far_past
-            stop = _parse_utc(r['valid_to']) if r.get('valid_to') else far_future
-            periods.append((start, stop, float(r['value_inc_vat'])))
-        periods.sort(key=lambda p: p[0])
-        self._starts = [p[0] for p in periods]
-        self._periods = periods
-
-    def __len__(self):
-        return len(self._periods)
-
-    def at(self, instant: datetime):
-        """The rate in force at `instant` (UTC), or None."""
-        i = bisect.bisect_right(self._starts, instant) - 1
-        while i >= 0:
-            start, stop, value = self._periods[i]
-            if start <= instant < stop:
-                return value
-            i -= 1
-        return None
-
-
-def slot_instants(day: date) -> list:
-    """UTC start instant of each local (Europe/London) half-hour slot of `day`."""
-    return [datetime(day.year, day.month, day.day, k // 2, 30 * (k % 2), tzinfo=LOCAL_TZ)
-            .astimezone(timezone.utc) for k in range(48)]
-
 
 def day_rates(timeline: Timeline, instants: list):
     """48 p/kWh for one day; gaps filled with the day's mean, None if the day has no rates."""
