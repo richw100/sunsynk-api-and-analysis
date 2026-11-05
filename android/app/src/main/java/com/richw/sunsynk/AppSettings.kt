@@ -151,6 +151,20 @@ fun parseEvSavings(obj: JsonObject?): com.richw.sunsynk.analysis.EvSavingsConfig
             com.richw.sunsynk.analysis.EvCredit(o.get("month").asString, o.get("amount").asDouble,
                 o.get("note")?.asString ?: "")
         } ?: d.credits,
+        eurToGbp = obj.get("eurToGbp")?.asDouble ?: d.eurToGbp,
+        publicMpg = obj.get("publicMpg")?.takeUnless { it.isJsonNull }?.asDouble,
+        publicMilesPerKwh = obj.get("publicMilesPerKwh")?.takeUnless { it.isJsonNull }?.asDouble,
+        publicFuelPrice = obj.get("publicFuelPrice")?.takeUnless { it.isJsonNull }?.asDouble,
+        publicFuelCurrency = obj.get("publicFuelCurrency")?.asString ?: d.publicFuelCurrency,
+        customCharges = obj.getAsJsonArray("customCharges")?.map {
+            Gson().fromJson(it, com.richw.sunsynk.analysis.CustomCharge::class.java)
+        } ?: d.customCharges,
+        reimbursements = obj.getAsJsonArray("reimbursements")?.map {
+            Gson().fromJson(it, com.richw.sunsynk.analysis.Reimbursement::class.java)
+        } ?: d.reimbursements,
+        receiptEdits = obj.getAsJsonArray("receiptEdits")?.map {
+            Gson().fromJson(it, com.richw.sunsynk.analysis.ReceiptEdit::class.java)
+        } ?: d.receiptEdits,
     )
 }
 
@@ -162,6 +176,14 @@ fun evSavingsToJson(c: com.richw.sunsynk.analysis.EvSavingsConfig) = JsonObject(
         c.beforeCharger.forEach { e -> add(JsonObject().apply {
             addProperty("month", e.month); addProperty("kwh", e.kwh); addProperty("rate", e.rate) }) }
     })
+    addProperty("eurToGbp", c.eurToGbp)
+    c.publicMpg?.let { addProperty("publicMpg", it) }
+    c.publicMilesPerKwh?.let { addProperty("publicMilesPerKwh", it) }
+    c.publicFuelPrice?.let { addProperty("publicFuelPrice", it) }
+    addProperty("publicFuelCurrency", c.publicFuelCurrency)
+    add("customCharges", Gson().toJsonTree(c.customCharges))
+    add("reimbursements", Gson().toJsonTree(c.reimbursements))
+    add("receiptEdits", Gson().toJsonTree(c.receiptEdits))
     add("credits", JsonArray().apply {
         c.credits.forEach { e -> add(JsonObject().apply {
             addProperty("month", e.month); addProperty("amount", e.amount); addProperty("note", e.note) }) }
@@ -514,6 +536,20 @@ class DataSourceStore(private val context: Context) {
     val fuseDir get() = File(context.filesDir, "fuseenergydata")
     val indraDir get() = File(context.filesDir, "indraData")
     val eonDir get() = File(context.filesDir, "eonData")
+    val electroverseDir get() = File(context.filesDir, "electroverseData")
+
+    /** Electroverse website session cookies (token, refreshToken, csrftoken), copied from the
+     *  sign-in WebView; plus this install's random device id (sent as X-Dui, like the website). */
+    var electroverseCookies: Map<String, String>
+        get() = runCatching {
+            JsonParser.parseString(prefs.getString("electroverse_cookies", "{}")).asJsonObject.entrySet()
+                .associate { it.key to it.value.asString }
+        }.getOrDefault(emptyMap())
+        set(v) = prefs.edit().putString("electroverse_cookies", Gson().toJson(v)).apply()
+    val electroverseDeviceId: String
+        get() = prefs.getString("electroverse_dui", null) ?: java.util.UUID.randomUUID().toString().also {
+            prefs.edit().putString("electroverse_dui", it).apply()
+        }
 
     /** E.ON Next Auth0 session. Its refresh token is single-use (each refresh returns a new one
      *  and an old one is then rejected), so a session can't be shared with the desktop

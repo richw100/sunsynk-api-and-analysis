@@ -24,6 +24,14 @@ fun DataSourcesScreen(vm: DataSourcesViewModel, onBack: () -> Unit) {
     val fuse by vm.fuse.collectAsStateWithLifecycle()
     val indra by vm.indra.collectAsStateWithLifecycle()
     val eon by vm.eon.collectAsStateWithLifecycle()
+    val electroverse by vm.electroverse.collectAsStateWithLifecycle()
+    var evSignIn by remember { mutableStateOf(false) }
+    if (evSignIn) {
+        ElectroverseSignIn(
+            onCookies = { raw -> vm.electroverseSignedIn(raw).also { if (it) evSignIn = false } },
+            onDismiss = { evSignIn = false })
+        return
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -43,6 +51,7 @@ fun DataSourcesScreen(vm: DataSourcesViewModel, onBack: () -> Unit) {
             FuseCard(vm, fuse)
             IndraCard(vm, indra)
             EonCard(vm, eon)
+            ElectroverseCard(vm, electroverse, onSignIn = { evSignIn = true })
         }
     }
 }
@@ -219,6 +228,120 @@ private fun EonSignInDialog(url: String, onCallback: (String) -> Unit, onDismiss
                         }
                     },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ElectroverseCard(vm: DataSourcesViewModel, ui: SourceUi, onSignIn: () -> Unit) {
+    SourceCard(
+        "Electroverse — public charging",
+        "Your public charging receipts, for the EV tab. Sign in on Electroverse's own page (magic link, " +
+            "Google or password); the app keeps the session, never your password.",
+        ui,
+    ) {
+        if (ui.step == SignInStep.SIGNED_IN) {
+            Button(onClick = vm::electroverseDownload, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Download charging receipts")
+            }
+            TextButton(onClick = onSignIn, enabled = !ui.busy) { Text("Sign in again") }
+        } else {
+            Button(onClick = onSignIn, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Sign in to Electroverse")
+            }
+        }
+    }
+}
+
+private const val ELECTROVERSE_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
+/** Electroverse's own log-in page in a full-screen WebView (not a Dialog). Google sign-in opens
+ *  in a pop-up window, shown on top as a second WebView (as ElectroFind does); when it closes the
+ *  session cookies are polled for. A magic link from the email can be pasted and opened here. */
+@android.annotation.SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun ElectroverseSignIn(onCookies: (String?) -> Boolean, onDismiss: () -> Unit) {
+    var link by remember { mutableStateOf("") }
+    var web by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var popup by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    val clipboard = LocalClipboardManager.current
+    val handler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    androidx.activity.compose.BackHandler(onBack = { if (popup != null) popup = null else onDismiss() })
+
+    fun check(): Boolean {
+        val cm = android.webkit.CookieManager.getInstance()
+        cm.flush()
+        return onCookies(cm.getCookie(com.richw.sunsynk.api.ElectroverseClient.SITE))
+    }
+    fun poll(attempt: Int = 0) {
+        if (attempt > 20 || check()) return
+        handler.postDelayed({ poll(attempt + 1) }, 500)
+    }
+    fun android.webkit.WebView.setUp() {
+        // A wrap-content WebView makes the page's 100vh = 0, and the page then lays itself out to nothing.
+        layoutParams = android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.setSupportMultipleWindows(true)
+        settings.javaScriptCanOpenWindowsAutomatically = true
+        settings.userAgentString = ELECTROVERSE_UA          // as ElectroFind; Google refuses the WebView default
+        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+        webViewClient = object : android.webkit.WebViewClient() {
+            override fun onPageFinished(view: android.webkit.WebView, url: String) { check() }
+            // A single-page app: sign-in can finish without a full page load.
+            override fun doUpdateVisitedHistory(view: android.webkit.WebView, url: String, isReload: Boolean) {
+                if ("electroverse.com" in url && "log-in" !in url) check()
+            }
+        }
+        webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onCreateWindow(view: android.webkit.WebView, isDialog: Boolean, isUserGesture: Boolean,
+                                        resultMsg: android.os.Message): Boolean {
+                val child = android.webkit.WebView(view.context).apply { setUp() }
+                popup = child
+                (resultMsg.obj as android.webkit.WebView.WebViewTransport).webView = child
+                resultMsg.sendToTarget()
+                return true
+            }
+            override fun onCloseWindow(window: android.webkit.WebView) {
+                popup = null
+                poll()
+            }
+        }
+    }
+
+    Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        Box(Modifier.fillMaxSize()) {
+            Column {
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("Electroverse sign-in", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                }
+                Text("Sign in with Google, Apple or your password below. Using a magic link instead? Long-press the " +
+                    "link in the email, copy it, then paste and open it here.",
+                    Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    OutlinedTextField(link, { link = it }, Modifier.weight(1f), label = { Text("Sign-in link") }, singleLine = true,
+                        trailingIcon = { TextButton(onClick = { link = clipboard.getText()?.text ?: link }) { Text("Paste") } })
+                    TextButton(onClick = { web?.loadUrl(link.trim()) }, enabled = link.trim().startsWith("https://")) { Text("Open") }
+                }
+                androidx.compose.ui.viewinterop.AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        android.webkit.CookieManager.getInstance().setAcceptCookie(true)
+                        android.webkit.WebView(ctx).apply {
+                            setUp()
+                            loadUrl(com.richw.sunsynk.api.ElectroverseClient.LOGIN_URL)
+                            web = this
+                        }
+                    },
+                )
+            }
+            // Google's sign-in pop-up, on top of the page while it is open.
+            popup?.let { p ->
+                androidx.compose.ui.viewinterop.AndroidView(modifier = Modifier.fillMaxSize(), factory = { p })
             }
         }
     }

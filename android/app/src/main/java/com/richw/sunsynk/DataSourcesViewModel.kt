@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonParser
 import com.richw.sunsynk.api.EonAuthException
 import com.richw.sunsynk.api.EonClient
+import com.richw.sunsynk.api.ElectroverseAuthException
+import com.richw.sunsynk.api.ElectroverseClient
 import com.richw.sunsynk.api.FuseAuthException
 import com.richw.sunsynk.api.FuseClient
 import com.richw.sunsynk.api.IndraAuthException
@@ -40,6 +42,8 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
     val indra = _indra.asStateFlow()
     private val _eon = MutableStateFlow(SourceUi())
     val eon = _eon.asStateFlow()
+    private val _electroverse = MutableStateFlow(SourceUi())
+    val electroverse = _electroverse.asStateFlow()
 
     // The sign-in attempt in progress: its PKCE verifier and state (never stored).
     private var eonPkce: Triple<String, String, String>? = null      // verifier, state, url
@@ -79,6 +83,44 @@ class DataSourcesViewModel(context: Context) : ViewModel() {
             step = if (store.eonTokens.refreshToken.isNotEmpty()) SignInStep.SIGNED_IN else SignInStep.SIGNED_OUT,
             summary = eonSummary(),
         )
+        _electroverse.value = SourceUi(
+            step = if (store.electroverseCookies.isNotEmpty()) SignInStep.SIGNED_IN else SignInStep.SIGNED_OUT,
+            summary = electroverseSummary(),
+        )
+    }
+
+    // ── Electroverse ──────────────────────────────────────────────────────────
+
+    private fun electroverseSummary(): String {
+        val charges = ElectroverseClient.loadCharges(store.electroverseDir)
+        if (charges.isEmpty()) return "No receipts downloaded yet"
+        val byCur = charges.groupBy { it.currency }.entries.joinToString(", ") { (c, l) -> "%s %,.2f".format(c, l.sumOf { it.gross }) }
+        val days = charges.map { it.start.atZone(com.richw.sunsynk.analysis.EvSavings.ZONE).toLocalDate() }
+        return "${charges.size} public charges, ${days.min()} to ${days.max()}: " +
+            "${"%,.0f".format(charges.sumOf { it.kwh })} kWh, $byCur"
+    }
+
+    /** The sign-in WebView reached a page with session cookies: keep them. */
+    fun electroverseSignedIn(rawCookies: String?): Boolean {
+        val c = ElectroverseClient.sessionCookies(rawCookies)
+        if (c["token"].isNullOrBlank() && c["refreshToken"].isNullOrBlank()) return false
+        store.electroverseCookies = c
+        _electroverse.value = _electroverse.value.copy(step = SignInStep.SIGNED_IN, error = null,
+            message = "Signed in to Electroverse")
+        return true
+    }
+
+    fun electroverseDownload() = run(_electroverse) {
+        val client = ElectroverseClient(store.electroverseDir, store.electroverseCookies, store.electroverseDeviceId,
+            onCookies = { store.electroverseCookies = it })
+        val charges = try {
+            client.collect { p -> _electroverse.value = _electroverse.value.copy(progress = p) }
+        } catch (e: ElectroverseAuthException) {
+            store.electroverseCookies = emptyMap()
+            return@run _electroverse.value.copy(busy = false, step = SignInStep.SIGNED_OUT, progress = "", error = e.message)
+        }
+        _electroverse.value.copy(busy = false, progress = "", summary = electroverseSummary(),
+            message = "${charges.size} charging receipts (${client.calls} requests)")
     }
 
     private fun eonClient() = EonClient(store.eonDir, store.eonTokens, onTokens = { store.eonTokens = it })
