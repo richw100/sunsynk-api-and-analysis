@@ -87,9 +87,10 @@ private fun SummaryCard(state: EvSavingsUiState) {
                     money(t.publicCost), money(t.publicPetrolCost), pence(t.publicCost * 100 / t.publicKwh)),
                     style = MaterialTheme.typography.bodySmall)
             }
-            if (t.reimbursed > 0) {
-                Text("Mileage repaid %s: %s in the total (paid − the petrol those miles would have needed)".format(
-                    money(r.repayments.sumOf { it.repayment.amount }), money(t.reimbursed)), style = MaterialTheme.typography.bodySmall)
+            if (r.repayments.isNotEmpty()) {
+                val ev = r.repayments.mapNotNull { it.evProfit }.sum(); val pet = r.repayments.mapNotNull { it.petrolProfit }.sum()
+                Text("Mileage repaid %s: profit ≈ %s electric vs %s petrol (not added: a petrol car is paid too)".format(
+                    money(r.repayments.sumOf { it.repayment.amount }), money(ev), money(pet)), style = MaterialTheme.typography.bodySmall)
             }
             if (y.days > 0) Text("Last 12 full months: ${money(y.saved)} saved over %,.0f miles".format(y.miles),
                 style = MaterialTheme.typography.bodyMedium)
@@ -375,9 +376,9 @@ private fun PublicCard(state: EvSavingsUiState, vm: EvSavingsViewModel) {
             // ── repayments
             HorizontalDivider()
             Text("Repaid for EV miles", style = MaterialTheme.typography.titleSmall)
-            Text("Mileage you've been paid for EV miles. A petrol car would have been paid too, so each claim adds " +
-                "(paid − the petrol those miles would have needed) to the total; the charging is already counted in your " +
-                "charges. Petrol price from a public charge that day, else home.", style = MaterialTheme.typography.bodySmall)
+            Text("Mileage you've been paid. A petrol car would have been paid the same, so this doesn't change the " +
+                "saving; it shows what you made on the claim each way. Petrol price from a public charge that day, else home; " +
+                "charging at that month's EV cost per mile.", style = MaterialTheme.typography.bodySmall)
             val calcs = state.result?.repayments?.associateBy { it.repayment.id } ?: emptyMap()
             // EV £/mile per month (home + public), to estimate what a claim's miles cost to charge
             val perMile = state.result?.months?.associate { it.month to (if (it.miles > 0) it.evCost / it.miles else null) } ?: emptyMap()
@@ -389,16 +390,15 @@ private fun PublicCard(state: EvSavingsUiState, vm: EvSavingsViewModel) {
                                     else money(r.amount)
                         Text("${r.date}  $claim", style = MaterialTheme.typography.bodyMedium)
                         calcs[r.id]?.let { c ->
-                            Text(if (c.petrolCost != null) "Petrol for those miles ≈ %s (%.1fp/L, %.1f mpg, %s) → adds %s to the total".format(
-                                money(c.petrolCost), c.pence, c.mpg, c.priceFrom, money(c.adjustment))
-                                else "Adds %s to the total (%s)".format(money(c.adjustment), c.priceFrom),
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                        val pm = perMile[r.date.take(7)] ?: overall
-                        if (r.miles != null && pm != null) {
-                            val charge = r.miles * pm
-                            Text("Approx. profit: %s − charging ≈ %s (%.1fp/mi) = %s".format(money(r.amount), money(charge), pm * 100,
-                                money(r.amount - charge)), style = MaterialTheme.typography.bodySmall, color = saving)
+                            if (c.petrolCost != null && c.chargingCost != null) {
+                                Text("Electric: %s − charging ≈ %s = %s profit".format(money(c.repayment.amount), money(c.chargingCost),
+                                    money(c.evProfit!!)), style = MaterialTheme.typography.bodySmall, color = saving)
+                                Text("Petrol: %s − fuel ≈ %s (%.1fp/L, %.1f mpg, %s) = %s profit".format(money(c.repayment.amount),
+                                    money(c.petrolCost), c.pence, c.mpg, c.priceFrom, money(c.petrolProfit!!)),
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("EV saving on these miles ≈ %s (already in the total)".format(money(c.evSaving!!)),
+                                    style = MaterialTheme.typography.bodySmall)
+                            } else Text("Add the miles to compare electric and petrol (${c.priceFrom})", style = MaterialTheme.typography.bodySmall)
                         }
                         if (r.note.isNotBlank()) Text(r.note, style = MaterialTheme.typography.bodySmall)
                     }

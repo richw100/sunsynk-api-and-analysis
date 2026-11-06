@@ -92,11 +92,17 @@ data class EvMonth(
 
 data class PetrolPrice(val date: String, val pence: Double, val source: String)
 
-/** A repayment as counted: [petrolCost] = its miles at [pence]/litre and [mpg] (from a public charge
- *  that day, else home); [adjustment] = what it adds to the total (amount − petrolCost, or the
- *  whole amount when no miles were given). */
+/** A mileage repayment, for information only: a petrol car would have been paid the same, so it
+ *  doesn't change the EV-vs-petrol total (the charging for its miles is already counted there).
+ *  [petrolCost] = its miles at [pence]/litre and [mpg] (a public charge that day, else home);
+ *  [chargingCost] = its miles at that month's EV £/mile. EV profit − petrol profit = the EV saving
+ *  on those miles, which the total already holds. */
 data class RepaymentCalc(val repayment: Reimbursement, val petrolCost: Double?, val pence: Double?, val mpg: Double?,
-                         val priceFrom: String, val adjustment: Double)
+                         val priceFrom: String, val chargingCost: Double?) {
+    val evProfit get() = chargingCost?.let { repayment.amount - it }
+    val petrolProfit get() = petrolCost?.let { repayment.amount - it }
+    val evSaving get() = if (petrolCost != null && chargingCost != null) petrolCost - chargingCost else null
+}
 
 data class EvSavingsResult(
     val months: List<EvMonth>,
@@ -346,25 +352,16 @@ object EvSavings {
             val row = rows[m] ?: EvMonth(m, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
             rows[m] = row.copy(credit = row.credit + cs.sumOf { it.amount })
         }
-        // Repaid miles would have been paid on a petrol car too, so for them the total should hold the
-        // actual profit (paid − charging), not petrol − charging. Charging is already counted, so each
-        // repayment adds (paid − the petrol cost of its miles). That petrol cost uses a public charge on
-        // the same date (its fuel price and mpg) if there is one, else home (local price, home mpg).
+        // Repayments are information only (see RepaymentCalc): the payment is the same for a petrol car.
         val calcs = cfg.reimbursements.map { r ->
-            val miles = r.miles ?: return@map RepaymentCalc(r, null, null, null, "no miles given: whole amount", r.amount)
+            val miles = r.miles ?: return@map RepaymentCalc(r, null, null, null, "no miles given", null)
             val pub = all.firstOrNull { it.public && it.date == r.date }
             val pence = pub?.let { it.pence ?: publicPence(cfg) } ?: petrolPrice(r.date, national, local, off?.first, min)?.pence
             val mpg = if (pub != null) pub.mpg ?: cfg.publicMpg ?: cfg.mpg else cfg.mpg
-            val from = if (pub != null) "public charge that day" else "home price"
-            if (pence == null) RepaymentCalc(r, null, null, mpg, "no petrol price: whole amount", r.amount)
-            else {
-                val petrol = miles / mpg * LITRES_PER_GALLON * pence / 100
-                RepaymentCalc(r, petrol, pence, mpg, from, r.amount - petrol)
-            }
-        }
-        for ((m, cs) in calcs.groupBy { it.repayment.date.take(7) }) {
-            val row = rows[m] ?: EvMonth(m, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
-            rows[m] = row.copy(reimbursed = row.reimbursed + cs.sumOf { it.adjustment })
+            val month = rows[r.date.take(7)]
+            val perMile = month?.takeIf { it.miles > 0 }?.let { it.evCost / it.miles }
+            RepaymentCalc(r, pence?.let { miles / mpg * LITRES_PER_GALLON * it / 100 }, pence, mpg,
+                if (pub != null) "public charge that day" else "home price", perMile?.let { miles * it })
         }
         val latest = petrolPrice(today.toString(), national, local, off?.first, min)
             ?: local.entries.lastOrNull { it.value.first >= min }?.let { PetrolPrice(it.key, it.value.second, "local") }

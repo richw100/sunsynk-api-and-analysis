@@ -4,6 +4,7 @@ import com.google.gson.JsonParser
 import com.richw.sunsynk.api.ElectroverseClient
 import com.richw.sunsynk.api.PublicCharge
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.Instant
 import java.time.LocalDate
@@ -75,9 +76,8 @@ class ElectroverseTest {
         val pubLitres = 40.0 / 40 * EvSavings.LITRES_PER_GALLON          // 40 miles at 40 mpg
         assertEquals(pubLitres * 1.60, aug.publicPetrolCost, 1e-9)
         assertEquals(40.0 / 50 * EvSavings.LITRES_PER_GALLON * 1.5 + pubLitres * 1.60, aug.petrolCost, 1e-9)
-        assertEquals(30.0, aug.reimbursed, 1e-9)
-        assertEquals(aug.petrolCost - (4.5 - 30.0), aug.saved, 1e-9)
-        assertEquals(Pair(4.0, 26.0), r.repaid())                        // £4 covered, £26 profit
+        assertEquals(0.0, aug.reimbursed, 1e-9)                           // repayments don't change the saving
+        assertEquals(aug.petrolCost - 4.5, aug.saved, 1e-9)
     }
 
     @Test
@@ -110,22 +110,26 @@ class ElectroverseTest {
     }
 
     @Test
-    fun mileageRepaymentsAddPaidMinusThePetrolTheirMilesWouldHaveNeeded() {
+    fun mileageRepaymentsAreInformationOnly() {
+        // The user's example: paid £135, charging £15, petrol £45 -> EV profit £120, petrol £90, EV saving £30.
         val n = listOf(LocalDate.of(2026, 8, 3) to 150.0)                  // home: 150p/L at 50 mpg
-        val cfg = EvSavingsConfig(mpg = 50.0, milesPerKwh = 4.0, chargeEfficiency = 1.0, eurToGbp = 0.8, publicMpg = 40.0,
+        val cfg = EvSavingsConfig(mpg = 50.0, milesPerKwh = 4.0, chargeEfficiency = 1.0, publicMpg = 40.0,
             reimbursements = listOf(
                 Reimbursement("a", "2026-08-10", 135.0, miles = 300.0, ratePence = 45.0),   // public charge that day
                 Reimbursement("b", "2026-08-20", 45.0, miles = 100.0, ratePence = 45.0),    // none: home price
-                Reimbursement("c", "2026-08-21", 10.0)))                                    // no miles: whole amount
-        val pub = EvDay("2026-08-10", 10.0, 4.0, public = true, pence = 160.0)
-        val r = EvSavings.calculate(listOf(pub), cfg, n, emptyMap(), 0, LocalDate.of(2026, 9, 1))
+                Reimbursement("c", "2026-08-21", 10.0)))                                    // no miles
+        val home = EvDay("2026-08-05", 50.0, 3.0)                                       // 200 mi
+        val pub = EvDay("2026-08-10", 25.0, 12.0, public = true, pence = 160.0)          // 100 mi
+        val base = EvSavings.calculate(listOf(home, pub), cfg.copy(reimbursements = emptyList()), n, emptyMap(), 0, LocalDate.of(2026, 9, 1))
+        val r = EvSavings.calculate(listOf(home, pub), cfg, n, emptyMap(), 0, LocalDate.of(2026, 9, 1))
+        assertEquals(base.total.saved, r.total.saved, 1e-9)                         // unchanged by repayments
         val (a, b, c) = r.repayments
+        val perMile = 15.0 / 300.0                                                     // August EV £/mile
         assertEquals(300.0 / 40 * EvSavings.LITRES_PER_GALLON * 1.60, a.petrolCost!!, 1e-9)
-        assertEquals(135.0 - a.petrolCost!!, a.adjustment, 1e-9)
+        assertEquals(300.0 * perMile, a.chargingCost!!, 1e-9)
+        assertEquals(135.0 - 15.0, a.evProfit!!, 1e-9)
+        assertEquals(a.evProfit!! - a.petrolProfit!!, a.evSaving!!, 1e-9)
         assertEquals(100.0 / 50 * EvSavings.LITRES_PER_GALLON * 1.50, b.petrolCost!!, 1e-9)
-        assertEquals(10.0, c.adjustment, 1e-9)
-        val aug = r.months.single()
-        assertEquals(a.adjustment + b.adjustment + 10.0, aug.reimbursed, 1e-9)
-        assertEquals(aug.petrolCost - aug.evCost + aug.reimbursed, aug.saved, 1e-9)
+        assertNull(c.petrolCost); assertNull(c.evSaving)
     }
 }
